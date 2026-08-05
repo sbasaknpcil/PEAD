@@ -66,7 +66,8 @@ async def fetch_signals(client):
                 log.exception("Failed to extract card for message %s", key)
                 continue
 
-        if card.get("nse_ticker") and card.get("pead_score") is not None:
+        has_identifier = card.get("nse_ticker") or card.get("company_name")
+        if has_identifier and card.get("pead_score") is not None:
             signals.append({"message_id": key, "date": message.date, "card": card})
 
     signals.sort(key=lambda s: s["date"])
@@ -109,11 +110,15 @@ def simulate(signals):
     for signal in signals:
         card = signal["card"]
         should_buy, reason = rules.decide_buy(card)
-        log.info("%s (%s): %s", card.get("nse_ticker"), signal["date"].date(), reason)
+        log.info("%s (%s): %s", card.get("nse_ticker") or card.get("company_name"), signal["date"].date(), reason)
         if not should_buy:
             continue
 
-        ticker = card["nse_ticker"]
+        ticker = card.get("nse_ticker") or price_feed.resolve_symbol(card.get("company_name"))
+        if not ticker:
+            log.warning("Could not resolve a ticker for %s, skipping signal", card.get("company_name"))
+            continue
+
         history = get_history(ticker)
         if history.empty:
             log.warning("No price history for %s, skipping signal", ticker)

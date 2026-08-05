@@ -4,6 +4,7 @@ from telethon import TelegramClient
 
 import backtest
 import config
+import price_feed
 
 
 async def main():
@@ -22,7 +23,8 @@ async def main():
     print(f"{'Ticker':<14}{'Quarter':<10}{'Score':>7}  Date")
     for s in qualifying:
         card = s["card"]
-        print(f"{card.get('nse_ticker', ''):<14}{card.get('quarter', ''):<10}{card.get('pead_score'):>7}  {s['date'].date()}")
+        ticker = card.get("nse_ticker") or price_feed.resolve_symbol(card.get("company_name")) or "?"
+        print(f"{ticker:<14}{card.get('quarter', ''):<10}{card.get('pead_score'):>7}  {s['date'].date()}")
 
 
 if __name__ == "__main__":

@@ -47,8 +47,6 @@ async def run_client():
 async def main():
     if not config.TELEGRAM_API_ID or not config.TELEGRAM_API_HASH:
         raise SystemExit("Set TELEGRAM_API_ID / TELEGRAM_API_HASH in .env")
-    if not config.GEMINI_API_KEY:
-        raise SystemExit("Set GEMINI_API_KEY in .env")
 
     storage.init_db()
     asyncio.create_task(position_check_loop())

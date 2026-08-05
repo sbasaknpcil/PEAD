@@ -6,8 +6,42 @@ import yfinance as yf
 DMA_WINDOW_DAYS = 200
 
 
-def _symbol(nse_ticker):
-    return nse_ticker if nse_ticker.endswith(".NS") else f"{nse_ticker}.NS"
+def _symbol(ticker):
+    if ticker.endswith(".NS") or ticker.endswith(".BO"):
+        return ticker
+    return f"{ticker}.NS"
+
+
+def _search_india(query):
+    try:
+        results = yf.Search(query, max_results=5).quotes
+    except Exception:
+        return None
+    india_results = [q for q in results if q.get("symbol", "").endswith((".NS", ".BO"))]
+    nse = next((q for q in india_results if q["symbol"].endswith(".NS")), None)
+    if nse:
+        return nse["symbol"]
+    bse = next((q for q in india_results if q["symbol"].endswith(".BO")), None)
+    return bse["symbol"] if bse else None
+
+
+def resolve_symbol(company_name):
+    """Resolve a company name to a tradeable Yahoo symbol, preferring NSE over BSE.
+    Used when a card shows a BSE code instead of an NSE ticker — many BSE-labeled
+    companies are actually dual-listed and have an NSE symbol too."""
+    if not company_name:
+        return None
+
+    symbol = _search_india(company_name)
+    if symbol:
+        return symbol
+
+    # The trailing corporate suffix (LTD/LIMITED) is the most OCR-corruption-prone
+    # word on the card (large stylized font, often clipped) — retry without it.
+    words = company_name.split()
+    if len(words) > 1:
+        return _search_india(" ".join(words[:-1]))
+    return None
 
 
 def get_last_price(nse_ticker):

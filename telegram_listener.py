@@ -5,6 +5,7 @@ from telethon.tl.types import PeerChannel
 
 import config
 import portfolio
+import price_feed
 import rules
 import storage
 import vision_parser
@@ -50,9 +51,9 @@ async def _handle_card(client, message):
         log.exception("Failed to parse card %s", image_path)
         return
 
-    ticker = card.get("nse_ticker")
+    ticker = card.get("nse_ticker") or price_feed.resolve_symbol(card.get("company_name"))
     if not ticker:
-        log.warning("Card had no NSE ticker, skipping: %s", card)
+        log.warning("Card had no NSE ticker and none could be resolved, skipping: %s", card)
         return
 
     should_buy, reason = rules.decide_buy(card)

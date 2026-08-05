@@ -1,86 +1,140 @@
-import base64
-import json
-import logging
-import mimetypes
-import time
+import re
 
-import requests
+import pytesseract
+from PIL import Image
 
-import config
+NUMBER_RE = re.compile(r"^-?[\d,]+\.?\d*%?$")
+QUARTER_RE = re.compile(r"Q[1-4l]\s*FY\s*(\d{2})", re.IGNORECASE)
 
-log = logging.getLogger("vision_parser")
-
-GEMINI_ENDPOINT = (
-    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-)
-
-MAX_RETRIES = 5
-BASE_BACKOFF_SECONDS = 5
-
-EXTRACTION_PROMPT = """This is a PEAD (Post-Earnings Announcement Drift) result card from a \
-stock research Telegram channel. Extract the following as strict JSON:
-
-{
-  "company_name": string,
-  "nse_ticker": string,          // the NSE symbol shown near the top, e.g. "UNIPARTS"
-  "quarter": string,             // e.g. "Q1 FY27"
-  "pead_score": number,
-  "fwd_pe": number,
-  "financials": [
-    {"metric": string, "latest_quarter": number|null, "prior_quarter": number|null, "year_ago_quarter": number|null}
-    // one row per metric row in the table (Revenue, EBITDA %, PBT, Net Profit, EPS, etc.),
-    // in the same left-to-right column order as shown on the card
-  ],
-  "last_price": number|null,
-  "price_change_1d_pct": number|null,
-  "price_change_1y_pct": number|null,
-  "price_change_3y_pct": number|null
-}
-
-If a field is not visible on the card, use null."""
+METRIC_LABELS = ["Revenue", "EBITDA", "PBT", "Profit", "EPS"]
 
 
-def _post_with_retry(url, payload):
-    for attempt in range(MAX_RETRIES + 1):
-        response = requests.post(
-            url, params={"key": config.GEMINI_API_KEY}, json=payload, timeout=60
+def _words(image):
+    data = pytesseract.image_to_data(image, config="--psm 11", output_type=pytesseract.Output.DICT)
+    words = []
+    for i in range(len(data["text"])):
+        text = data["text"][i].strip()
+        if text and int(data["conf"][i]) > 0:
+            words.append(
+                {
+                    "text": text,
+                    "x": data["left"][i],
+                    "y": data["top"][i],
+                    "w": data["width"][i],
+                    "h": data["height"][i],
+                }
+            )
+    return words
+
+
+def _center_x(word):
+    return word["x"] + word["w"] / 2
+
+
+def _center_y(word):
+    return word["y"] + word["h"] / 2
+
+
+def _parse_number(text):
+    text = text.strip()
+    if text in ("-", "—", "--", ""):
+        return None
+    cleaned = text.replace(",", "").rstrip("%")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _number_below_label(words, label_text, max_y_gap=150):
+    label = next((w for w in words if w["text"].lower() == label_text.lower()), None)
+    if label is None:
+        return None
+    candidates = [
+        w
+        for w in words
+        if NUMBER_RE.match(w["text"])
+        and w["y"] > label["y"]
+        and w["y"] - label["y"] < max_y_gap
+        and abs(_center_x(w) - _center_x(label)) < label["w"] * 3
+    ]
+    if not candidates:
+        return None
+    closest = min(candidates, key=lambda w: w["y"])
+    return _parse_number(closest["text"])
+
+
+def _find_ticker(words):
+    nse = next((w for w in words if w["text"].upper() == "NSE"), None)
+    if nse is None:
+        return None
+    same_row = [w for w in words if abs(_center_y(w) - _center_y(nse)) < nse["h"] and w["x"] > nse["x"]]
+    if not same_row:
+        return None
+    return min(same_row, key=lambda w: w["x"])["text"].upper()
+
+
+def _find_company_name(words):
+    anchor = next((w for w in words if w["text"].lower() in ("consolidated", "standalone")), None)
+    if anchor is None:
+        return None
+    name_words = [w for w in words if 200 < w["y"] < anchor["y"] - 20]
+    if not name_words:
+        return None
+    name_words.sort(key=lambda w: w["x"])
+    return " ".join(w["text"] for w in name_words)
+
+
+def _find_quarter(words):
+    joined = " ".join(w["text"] for w in words)
+    match = QUARTER_RE.search(joined)
+    if not match:
+        return None
+    return f"Q1 FY{match.group(1)}"
+
+
+def _extract_financials(words):
+    rows = []
+    for label in METRIC_LABELS:
+        label_word = next((w for w in words if w["text"].strip(":%").lower() == label.lower()), None)
+        if label_word is None:
+            continue
+        same_row = [
+            w
+            for w in words
+            if abs(_center_y(w) - _center_y(label_word)) < label_word["h"] * 0.8
+            and w["x"] > label_word["x"] + label_word["w"]
+            and NUMBER_RE.match(w["text"])
+        ]
+        same_row.sort(key=lambda w: w["x"])
+        values = [_parse_number(w["text"]) for w in same_row[:3]]
+        while len(values) < 3:
+            values.append(None)
+        display_name = "Net Profit" if label == "Profit" else label
+        rows.append(
+            {
+                "metric": display_name,
+                "latest_quarter": values[0],
+                "prior_quarter": values[1],
+                "year_ago_quarter": values[2],
+            }
         )
-        if response.status_code not in (429, 500, 502, 503, 504):
-            response.raise_for_status()
-            return response
-        if attempt == MAX_RETRIES:
-            response.raise_for_status()
-
-        retry_after = response.headers.get("Retry-After")
-        wait = float(retry_after) if retry_after else BASE_BACKOFF_SECONDS * (2 ** attempt)
-        log.warning(
-            "Gemini request failed (%d), retrying in %.0fs (attempt %d/%d)",
-            response.status_code, wait, attempt + 1, MAX_RETRIES,
-        )
-        time.sleep(wait)
+    return rows
 
 
 def extract_card(image_path):
-    media_type = mimetypes.guess_type(str(image_path))[0] or "image/png"
-    with open(image_path, "rb") as f:
-        image_b64 = base64.standard_b64encode(f.read()).decode("utf-8")
+    image = Image.open(image_path)
+    words = _words(image)
 
-    url = GEMINI_ENDPOINT.format(model=config.GEMINI_MODEL)
-    response = _post_with_retry(
-        url,
-        {
-            "contents": [
-                {
-                    "parts": [
-                        {"inline_data": {"mime_type": media_type, "data": image_b64}},
-                        {"text": EXTRACTION_PROMPT},
-                    ]
-                }
-            ],
-            "generationConfig": {"response_mime_type": "application/json"},
-        },
-    )
-
-    data = response.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
+    return {
+        "company_name": _find_company_name(words),
+        "nse_ticker": _find_ticker(words),
+        "quarter": _find_quarter(words),
+        "pead_score": _number_below_label(words, "SCORE"),
+        "fwd_pe": _number_below_label(words, "PE"),
+        "financials": _extract_financials(words),
+        "last_price": None,
+        "price_change_1d_pct": None,
+        "price_change_1y_pct": None,
+        "price_change_3y_pct": None,
+    }
