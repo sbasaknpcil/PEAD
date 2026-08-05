@@ -1,12 +1,21 @@
+import logging
 import re
 
 import pytesseract
 from PIL import Image
 
+log = logging.getLogger("vision_parser")
+
 NUMBER_RE = re.compile(r"^-?[\d,]+\.?\d*%?$")
 QUARTER_RE = re.compile(r"Q[1-4l]\s*FY\s*(\d{2})", re.IGNORECASE)
 
 METRIC_LABELS = ["Revenue", "EBITDA", "PBT", "Profit", "EPS"]
+
+# PEAD score is documented/observed as a 0-100 scale. OCR occasionally
+# inserts or misreads a stray digit (e.g. "55.7" -> "595.7"); a score outside
+# this range is more likely a misread than a real value, and a bad score
+# feeding straight into a buy decision is worse than skipping the card.
+PEAD_SCORE_MIN, PEAD_SCORE_MAX = 0, 100
 
 
 def _words(image):
@@ -46,7 +55,7 @@ def _parse_number(text):
         return None
 
 
-def _number_below_label(words, label_text, max_y_gap=150):
+def _number_below_label(words, label_text, max_y_gap=150, max_x_gap=150):
     label = next((w for w in words if w["text"].lower() == label_text.lower()), None)
     if label is None:
         return None
@@ -56,11 +65,14 @@ def _number_below_label(words, label_text, max_y_gap=150):
         if NUMBER_RE.match(w["text"])
         and w["y"] > label["y"]
         and w["y"] - label["y"] < max_y_gap
-        and abs(_center_x(w) - _center_x(label)) < label["w"] * 3
+        and abs(_center_x(w) - _center_x(label)) < max_x_gap
     ]
     if not candidates:
         return None
-    closest = min(candidates, key=lambda w: w["y"])
+    # Closest by horizontal alignment to the label, not by y — two adjacent
+    # stat boxes (e.g. PEAD SCORE / FWD PE) can sit at nearly the same y, and
+    # x-proximity is what actually identifies which box a number belongs to.
+    closest = min(candidates, key=lambda w: abs(_center_x(w) - _center_x(label)))
     return _parse_number(closest["text"])
 
 
@@ -126,11 +138,16 @@ def extract_card(image_path):
     image = Image.open(image_path)
     words = _words(image)
 
+    pead_score = _number_below_label(words, "SCORE")
+    if pead_score is not None and not (PEAD_SCORE_MIN <= pead_score <= PEAD_SCORE_MAX):
+        log.warning("Implausible PEAD score %s for %s, discarding as a likely OCR misread", pead_score, image_path)
+        pead_score = None
+
     return {
         "company_name": _find_company_name(words),
         "nse_ticker": _find_ticker(words),
         "quarter": _find_quarter(words),
-        "pead_score": _number_below_label(words, "SCORE"),
+        "pead_score": pead_score,
         "fwd_pe": _number_below_label(words, "PE"),
         "financials": _extract_financials(words),
         "last_price": None,
