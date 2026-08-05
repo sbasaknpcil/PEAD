@@ -1,0 +1,10 @@
+venv/
+.env
+*.session
+*.session-journal
+pead_bot.db
+downloaded_cards/
+__pycache__/
+*.pyc
+backtest_signal_cache.json
+backtest_trades.csv

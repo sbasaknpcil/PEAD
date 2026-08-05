@@ -1,0 +1,6 @@
+telethon>=1.34
+requests>=2.31  # calls the Gemini REST API directly; the google-genai SDK requires Python 3.10+
+yfinance>=0.2.40
+python-dotenv>=1.0
+multitasking==0.0.11  # yfinance dep; newer versions use `type[X]` syntax that needs Python 3.9+
+protobuf>=4.25  # yfinance's live-pricing module imports this directly
