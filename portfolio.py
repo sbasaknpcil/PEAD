@@ -28,6 +28,11 @@ def buy(ticker, pead_score):
             log.info("Skipping %s: price %.2f not above 200DMA %s", ticker, price, dma_200)
             return False
 
+    rsi = price_feed.get_rsi(ticker, period=config.RSI_PERIOD)
+    if not rules.passes_rsi(rsi):
+        log.info("Skipping %s: RSI %s below minimum %s", ticker, rsi, config.RSI_MIN)
+        return False
+
     allocation = min(cash, config.MAX_POSITION_VALUE_INR)
     quantity = math.floor(allocation / price)
     if quantity < 1:

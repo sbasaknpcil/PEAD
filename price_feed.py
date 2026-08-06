@@ -71,3 +71,26 @@ def get_200dma(nse_ticker):
     if len(history) < DMA_WINDOW_DAYS:
         return None
     return float(history["Close"].tail(DMA_WINDOW_DAYS).mean())
+
+
+def get_rsi(nse_ticker, period=14):
+    """Wilder's RSI over the given period, or None if there isn't enough history."""
+    now = datetime.now()
+    # A few extra periods of buffer so the smoothing has settled by the last row.
+    history = get_history(nse_ticker, now - timedelta(days=period * 5 + 30), now + timedelta(days=1))
+    if len(history) < period + 1:
+        return None
+
+    delta = history["Close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+
+    last_avg_gain = float(avg_gain.iloc[-1])
+    last_avg_loss = float(avg_loss.iloc[-1])
+    if last_avg_loss == 0:
+        return 100.0 if last_avg_gain > 0 else 50.0
+
+    rs = last_avg_gain / last_avg_loss
+    return 100 - (100 / (1 + rs))

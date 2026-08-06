@@ -97,6 +97,22 @@ def _find_company_name(words):
     return " ".join(w["text"] for w in name_words)
 
 
+def _find_market_cap_cr(words):
+    label = next((w for w in words if w["text"].lower() == "mcap"), None)
+    if label is None:
+        return None
+    same_row = [
+        w
+        for w in words
+        if abs(_center_y(w) - _center_y(label)) < label["h"] * 0.8
+        and w["x"] > label["x"] + label["w"]
+        and NUMBER_RE.match(w["text"])
+    ]
+    if not same_row:
+        return None
+    return _parse_number(min(same_row, key=lambda w: w["x"])["text"])
+
+
 def _find_quarter(words):
     joined = " ".join(w["text"] for w in words)
     match = QUARTER_RE.search(joined)
@@ -149,6 +165,7 @@ def extract_card(image_path):
         "quarter": _find_quarter(words),
         "pead_score": pead_score,
         "fwd_pe": _number_below_label(words, "PE"),
+        "market_cap_cr": _find_market_cap_cr(words),
         "financials": _extract_financials(words),
         "last_price": None,
         "price_change_1d_pct": None,

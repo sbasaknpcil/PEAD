@@ -29,6 +29,12 @@ def decide_buy(card):
     if score < config.PEAD_BUY_SCORE_MIN:
         return False, f"score {score} below buy threshold {config.PEAD_BUY_SCORE_MIN}"
 
+    market_cap = card.get("market_cap_cr")
+    if market_cap is None:
+        return False, "market cap not found on card, skipping (fail-closed)"
+    if market_cap < config.MIN_MARKET_CAP_CR:
+        return False, f"market cap {market_cap} Cr below minimum {config.MIN_MARKET_CAP_CR} Cr"
+
     revenue = _find_metric(card.get("financials"), "revenue")
     profit = _find_metric(card.get("financials"), "net profit", "pat")
 
@@ -38,10 +44,16 @@ def decide_buy(card):
             "QoQ and YoY on the same card — skipping as a sanity-check conflict"
         )
 
-    return True, f"score {score} >= {config.PEAD_BUY_SCORE_MIN} and financials do not conflict"
+    return True, f"score {score} >= {config.PEAD_BUY_SCORE_MIN}, MCap {market_cap} Cr, financials do not conflict"
 
 
 def is_above_200dma(price, dma_200):
     """True if price has crossed above the 200-day moving average. False (with no data
     to compare) is treated as a fail-closed 'don't buy' rather than an open pass."""
     return dma_200 is not None and price > dma_200
+
+
+def passes_rsi(rsi):
+    """True if RSI clears the configured minimum. None (insufficient price history)
+    is treated as a fail-closed 'don't buy' rather than an open pass."""
+    return rsi is not None and rsi > config.RSI_MIN
