@@ -8,8 +8,10 @@ from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient
 
 import config
+import earnings_pulse_listener
 import price_feed
 import rules
+import storage
 import telegram_listener
 import vision_parser
 
@@ -74,6 +76,25 @@ async def fetch_signals(client):
     return signals
 
 
+async def fetch_excellent_signals(client):
+    """Return {(bare_ticker, ist_date)} for every historical 'excellent'-rated message
+    on the confirmation channel, within the same lookback window as fetch_signals."""
+    channel_entity = await earnings_pulse_listener.resolve_channel(client)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=config.BACKTEST_LOOKBACK_DAYS)
+
+    excellent = set()
+    async for message in client.iter_messages(channel_entity, offset_date=cutoff, reverse=True):
+        parsed = earnings_pulse_listener._parse_rating(message.text)
+        if parsed is None:
+            continue
+        ticker, rating = parsed
+        if rating.lower() == config.CONFIRMATION_RATING_LABEL.lower():
+            excellent.add((ticker.upper(), message.date.astimezone(storage.IST).date()))
+
+    log.info("Found %d historical 'excellent' signals", len(excellent))
+    return excellent
+
+
 def _entry_date_and_row(history, signal_date):
     """First trading day strictly after signal_date, and that day's OHLC row."""
     signal_day = signal_date.date()
@@ -83,7 +104,8 @@ def _entry_date_and_row(history, signal_date):
     return None, None
 
 
-def simulate(signals):
+def simulate(signals, excellent_signals=None):
+    excellent_signals = excellent_signals if excellent_signals is not None else set()
     cash = config.STARTING_CAPITAL_INR
     open_positions = {}  # ticker -> dict
     trades = []
@@ -105,6 +127,11 @@ def simulate(signals):
             return None
         return float(prior_closes.tail(price_feed.DMA_WINDOW_DAYS).mean())
 
+    def rsi_before(ticker, entry_date):
+        history = histories[ticker]
+        prior_closes = history.loc[history.index < entry_date, "Close"]
+        return price_feed.rsi_from_closes(prior_closes, config.RSI_PERIOD)
+
     # Resolve a candidate entry (date, price) for every signal that passes the buy rule.
     candidates = []
     for signal in signals:
@@ -117,6 +144,15 @@ def simulate(signals):
         ticker = card.get("nse_ticker") or price_feed.resolve_symbol(card.get("company_name"))
         if not ticker:
             log.warning("Could not resolve a ticker for %s, skipping signal", card.get("company_name"))
+            continue
+
+        bare_ticker = storage._bare_ticker(ticker)
+        signal_ist_date = signal["date"].astimezone(storage.IST).date()
+        if (bare_ticker, signal_ist_date) not in excellent_signals:
+            log.info(
+                "%s (%s): skipped, not confirmed by an 'excellent' signal the same day",
+                ticker, signal_ist_date,
+            )
             continue
 
         history = get_history(ticker)
@@ -137,6 +173,11 @@ def simulate(signals):
                     ticker, entry_date.date(), entry_price, dma_200,
                 )
                 continue
+
+        rsi = rsi_before(ticker, entry_date)
+        if not rules.passes_rsi(rsi):
+            log.info("%s (%s): skipped, RSI %s below minimum %s", ticker, entry_date.date(), rsi, config.RSI_MIN)
+            continue
 
         candidates.append(
             {
@@ -262,7 +303,9 @@ async def main():
     signals = await fetch_signals(client)
     log.info("Found %d historical cards", len(signals))
 
-    trades, cash, open_positions = simulate(signals)
+    excellent_signals = await fetch_excellent_signals(client)
+
+    trades, cash, open_positions = simulate(signals, excellent_signals)
     report(trades, cash, open_positions)
 
     await client.disconnect()

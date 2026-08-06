@@ -73,15 +73,13 @@ def get_200dma(nse_ticker):
     return float(history["Close"].tail(DMA_WINDOW_DAYS).mean())
 
 
-def get_rsi(nse_ticker, period=14):
-    """Wilder's RSI over the given period, or None if there isn't enough history."""
-    now = datetime.now()
-    # A few extra periods of buffer so the smoothing has settled by the last row.
-    history = get_history(nse_ticker, now - timedelta(days=period * 5 + 30), now + timedelta(days=1))
-    if len(history) < period + 1:
+def rsi_from_closes(closes, period=14):
+    """Wilder's RSI computed from a Series of closing prices, or None if there aren't
+    enough rows. Shared by get_rsi() (live) and backtest.py (point-in-time)."""
+    if len(closes) < period + 1:
         return None
 
-    delta = history["Close"].diff()
+    delta = closes.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
@@ -94,3 +92,13 @@ def get_rsi(nse_ticker, period=14):
 
     rs = last_avg_gain / last_avg_loss
     return 100 - (100 / (1 + rs))
+
+
+def get_rsi(nse_ticker, period=14):
+    """Wilder's RSI over the given period, or None if there isn't enough history."""
+    now = datetime.now()
+    # A few extra periods of buffer so the smoothing has settled by the last row.
+    history = get_history(nse_ticker, now - timedelta(days=period * 5 + 30), now + timedelta(days=1))
+    if history.empty:
+        return None
+    return rsi_from_closes(history["Close"], period)
