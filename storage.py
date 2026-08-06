@@ -1,8 +1,20 @@
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import config
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _bare_ticker(ticker):
+    return ticker.upper().replace(".NS", "").replace(".BO", "")
+
+
+def _same_ist_day(iso_timestamp, now=None):
+    now = now or datetime.now(timezone.utc)
+    then = datetime.fromisoformat(iso_timestamp)
+    return then.astimezone(IST).date() == now.astimezone(IST).date()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS portfolio (
@@ -31,8 +43,21 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 
 CREATE TABLE IF NOT EXISTS processed_messages (
-    message_id INTEGER PRIMARY KEY,
-    processed_at TEXT NOT NULL
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    processed_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
+
+CREATE TABLE IF NOT EXISTS pending_pead_signals (
+    ticker TEXT PRIMARY KEY,
+    pead_score REAL NOT NULL,
+    received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS excellent_signals (
+    ticker TEXT PRIMARY KEY,
+    received_at TEXT NOT NULL
 );
 """
 
@@ -112,17 +137,61 @@ def record_trade(ticker, side, quantity, price, reason):
         )
 
 
-def is_message_processed(message_id):
+def is_message_processed(chat_id, message_id):
     with _conn() as conn:
         row = conn.execute(
-            "SELECT 1 FROM processed_messages WHERE message_id = ?", (message_id,)
+            "SELECT 1 FROM processed_messages WHERE chat_id = ? AND message_id = ?",
+            (chat_id, message_id),
         ).fetchone()
         return row is not None
 
 
-def mark_message_processed(message_id):
+def mark_message_processed(chat_id, message_id):
     with _conn() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO processed_messages (message_id, processed_at) VALUES (?, ?)",
-            (message_id, datetime.now(timezone.utc).isoformat()),
+            """INSERT OR IGNORE INTO processed_messages (chat_id, message_id, processed_at)
+               VALUES (?, ?, ?)""",
+            (chat_id, message_id, datetime.now(timezone.utc).isoformat()),
         )
+
+
+def add_pending_pead(ticker, pead_score):
+    with _conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO pending_pead_signals (ticker, pead_score, received_at)
+               VALUES (?, ?, ?)""",
+            (_bare_ticker(ticker), pead_score, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def get_pending_pead_today(ticker):
+    """The pending PEAD signal for this ticker, if it arrived today (IST) — else None."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM pending_pead_signals WHERE ticker = ?", (_bare_ticker(ticker),)
+        ).fetchone()
+    if row is None or not _same_ist_day(row["received_at"]):
+        return None
+    return dict(row)
+
+
+def remove_pending_pead(ticker):
+    with _conn() as conn:
+        conn.execute("DELETE FROM pending_pead_signals WHERE ticker = ?", (_bare_ticker(ticker),))
+
+
+def record_excellent_signal(ticker):
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO excellent_signals (ticker, received_at) VALUES (?, ?)",
+            (_bare_ticker(ticker), datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def has_excellent_today(ticker):
+    """True if this ticker got an 'excellent' signal today (IST)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT received_at FROM excellent_signals WHERE ticker = ?", (_bare_ticker(ticker),)
+        ).fetchone()
+    return row is not None and _same_ist_day(row["received_at"])

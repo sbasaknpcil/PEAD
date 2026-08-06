@@ -53,6 +53,31 @@ def buy(ticker, pead_score):
     return True
 
 
+def handle_pead_signal(ticker, pead_score):
+    """A PEAD card passed the score/financials/200DMA checks. Buy immediately if the
+    other channel already flagged this ticker 'excellent' today; otherwise wait."""
+    if storage.has_excellent_today(ticker):
+        log.info("%s: PEAD signal confirmed by existing 'excellent' signal, buying", ticker)
+        storage.remove_pending_pead(ticker)
+        buy(ticker, pead_score)
+    else:
+        storage.add_pending_pead(ticker, pead_score)
+        log.info("%s: PEAD signal recorded, awaiting confirmation from %s", ticker, config.CONFIRMATION_CHANNEL)
+
+
+def handle_excellent_signal(ticker):
+    """The confirmation channel flagged this ticker 'excellent'. Buy immediately if a
+    PEAD signal is already pending for it today; otherwise just record it."""
+    storage.record_excellent_signal(ticker)
+    pending = storage.get_pending_pead_today(ticker)
+    if pending:
+        log.info("%s: 'excellent' signal confirms pending PEAD signal, buying", ticker)
+        storage.remove_pending_pead(ticker)
+        buy(ticker, pending["pead_score"])
+    else:
+        log.info("%s: 'excellent' signal recorded, awaiting a PEAD signal", ticker)
+
+
 def _sell(position, price, reason):
     ticker = position["ticker"]
     quantity = position["quantity"]

@@ -25,6 +25,11 @@ TELEGRAM_GROUP_ID = _int("TELEGRAM_GROUP_ID", 2413883243)
 TELEGRAM_PEAD_TOPIC_ID = _int("TELEGRAM_PEAD_TOPIC_ID", 683)
 TELEGRAM_SIGNAL_SENDER = os.environ.get("TELEGRAM_SIGNAL_SENDER", "FinanciallyFreeFFBot")
 
+# Second channel used to confirm PEAD signals — a stock is only bought once
+# both channels have flagged it on the same (IST) day.
+CONFIRMATION_CHANNEL = os.environ.get("CONFIRMATION_CHANNEL", "earnings_pulse")
+CONFIRMATION_RATING_LABEL = os.environ.get("CONFIRMATION_RATING_LABEL", "Excellent")
+
 STARTING_CAPITAL_INR = _float("STARTING_CAPITAL_INR", 1_000_000)
 MAX_POSITION_VALUE_INR = _float("MAX_POSITION_VALUE_INR", 100_000)
 MAX_OPEN_POSITIONS = _int("MAX_OPEN_POSITIONS", 10)

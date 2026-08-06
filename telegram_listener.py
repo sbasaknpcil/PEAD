@@ -33,9 +33,9 @@ async def is_from_signal_source(client, message):
 
 
 async def _handle_card(client, message):
-    if storage.is_message_processed(message.id):
+    if storage.is_message_processed(message.chat_id, message.id):
         return
-    storage.mark_message_processed(message.id)
+    storage.mark_message_processed(message.chat_id, message.id)
 
     if not message.photo:
         return
@@ -59,7 +59,7 @@ async def _handle_card(client, message):
     should_buy, reason = rules.decide_buy(card)
     log.info("%s: %s", ticker, reason)
     if should_buy:
-        portfolio.buy(ticker, card.get("pead_score"))
+        portfolio.handle_pead_signal(ticker, card.get("pead_score"))
 
 
 def register(client, group_entity):

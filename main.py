@@ -4,6 +4,7 @@ import logging
 from telethon import TelegramClient
 
 import config
+import earnings_pulse_listener
 import portfolio
 import storage
 import telegram_listener
@@ -36,9 +37,15 @@ async def run_client():
 
     group_entity = await telegram_listener.resolve_group(client)
     telegram_listener.register(client, group_entity)
+
+    confirmation_entity = await earnings_pulse_listener.resolve_channel(client)
+    earnings_pulse_listener.register(client, confirmation_entity)
+
     log.info(
-        "Listening for PEAD cards in topic %s of group %s (paper trading, cash=%.2f)",
-        config.TELEGRAM_PEAD_TOPIC_ID, config.TELEGRAM_GROUP_ID, storage.get_cash(),
+        "Listening for PEAD cards in topic %s of group %s, confirming against '%s' "
+        "(paper trading, cash=%.2f)",
+        config.TELEGRAM_PEAD_TOPIC_ID, config.TELEGRAM_GROUP_ID,
+        config.CONFIRMATION_CHANNEL, storage.get_cash(),
     )
 
     await client.run_until_disconnected()
