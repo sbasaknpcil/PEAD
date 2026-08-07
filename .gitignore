@@ -8,3 +8,4 @@ __pycache__/
 *.pyc
 backtest_signal_cache.json
 backtest_trades.csv
+backtest_open_positions.csv

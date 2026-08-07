@@ -263,13 +263,45 @@ def _close(trades, open_positions, ticker, exit_date, exit_price, reason):
     )
 
 
+def _mark_to_market(open_positions):
+    """Fetch today's price for each open position and compute unrealized P&L.
+    Returns (rows, total_unrealized_pnl); a position whose price can't be
+    fetched is marked at entry price (0 P&L) rather than dropped."""
+    rows = []
+    total = 0.0
+    for ticker, pos in open_positions.items():
+        try:
+            current_price = price_feed.get_last_price(ticker)
+        except Exception:
+            log.warning("Could not fetch current price for open position %s, marking at entry", ticker)
+            current_price = pos["entry_price"]
+        pnl = pos["quantity"] * (current_price - pos["entry_price"])
+        pnl_pct = (current_price / pos["entry_price"] - 1) * 100
+        total += pnl
+        rows.append(
+            {
+                "ticker": ticker,
+                "pead_score": pos["pead_score"],
+                "entry_date": pos["entry_date"],
+                "entry_price": round(pos["entry_price"], 2),
+                "current_price": round(current_price, 2),
+                "pnl_pct": round(pnl_pct, 2),
+                "pnl_amount": round(pnl, 2),
+            }
+        )
+    return rows, total
+
+
 def report(trades, cash, open_positions):
     wins = [t for t in trades if t["reason"] == "target"]
     losses = [t for t in trades if t["reason"] == "stop-loss"]
-    total_pnl = sum(t["pnl_amount"] for t in trades)
+    realized_pnl = sum(t["pnl_amount"] for t in trades)
+
+    open_rows, unrealized_pnl = _mark_to_market(open_positions)
     ending_value = cash + sum(
-        p["quantity"] * p["entry_price"] for p in open_positions.values()
-    )  # open positions marked at entry price (no live price fetch here)
+        p["quantity"] * next(r["current_price"] for r in open_rows if r["ticker"] == t)
+        for t, p in open_positions.items()
+    )
 
     print("\n=== Backtest Summary ===")
     print(f"Closed trades: {len(trades)}  (wins: {len(wins)}, losses: {len(losses)})")
@@ -278,21 +310,37 @@ def report(trades, cash, open_positions):
         avg_return = sum(t["pnl_pct"] for t in trades) / len(trades)
         print(f"Win rate: {win_rate:.1f}%")
         print(f"Average return per trade: {avg_return:.2f}%")
-    print(f"Total realized P&L: Rs {total_pnl:,.2f}")
-    print(f"Still open: {len(open_positions)} position(s)")
+    print(f"Realized P&L (closed trades): Rs {realized_pnl:,.2f}")
+    print(f"Unrealized P&L ({len(open_rows)} open, marked at today's price): Rs {unrealized_pnl:,.2f}")
+    print(f"Total P&L (realized + unrealized): Rs {realized_pnl + unrealized_pnl:,.2f}")
     print(f"Starting capital: Rs {config.STARTING_CAPITAL_INR:,.2f}")
-    print(f"Ending value (cash + open, at entry price): Rs {ending_value:,.2f}")
+    print(f"Ending value (cash + open, mark-to-market): Rs {ending_value:,.2f}")
     print(
         f"Return on starting capital: "
         f"{(ending_value / config.STARTING_CAPITAL_INR - 1) * 100:.2f}%"
     )
+
+    if open_rows:
+        print(f"\n{'Ticker':<16}{'Score':>6}  {'Entry':>10}{'Current':>10}{'PnL%':>8}  PnL(Rs)")
+        for r in sorted(open_rows, key=lambda x: -x["pnl_pct"]):
+            print(
+                f"{r['ticker']:<16}{r['pead_score']:>6}  {r['entry_price']:>10}"
+                f"{r['current_price']:>10}{r['pnl_pct']:>7}%  {r['pnl_amount']}"
+            )
 
     if trades:
         with open(config.BACKTEST_TRADES_CSV_PATH, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(trades[0].keys()))
             writer.writeheader()
             writer.writerows(trades)
-        print(f"\nTrade-by-trade detail written to {config.BACKTEST_TRADES_CSV_PATH}")
+        print(f"\nClosed trade detail written to {config.BACKTEST_TRADES_CSV_PATH}")
+
+    if open_rows:
+        with open(config.BACKTEST_OPEN_POSITIONS_CSV_PATH, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(open_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(open_rows)
+        print(f"Open position detail written to {config.BACKTEST_OPEN_POSITIONS_CSV_PATH}")
 
 
 async def main():
