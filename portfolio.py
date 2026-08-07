@@ -1,5 +1,6 @@
 import logging
 import math
+from datetime import datetime, timezone
 
 import config
 import price_feed
@@ -44,16 +45,13 @@ def buy(ticker, pead_score):
         log.info("Skipping %s: insufficient cash (%.2f < %.2f)", ticker, cash, cost)
         return False
 
-    stop_loss_price = price * (1 - config.STOP_LOSS_PCT)
-    target_price = price * (1 + config.TARGET_PCT)
-
-    storage.open_position(ticker, quantity, price, stop_loss_price, target_price, pead_score)
+    storage.open_position(ticker, quantity, price, pead_score)
     storage.set_cash(cash - cost)
     storage.record_trade(ticker, "BUY", quantity, price, f"pead_score={pead_score}")
 
     log.info(
-        "BUY %s x%d @ %.2f (stop %.2f / target %.2f)",
-        ticker, quantity, price, stop_loss_price, target_price,
+        "BUY %s x%d @ %.2f (same-day target +%.0f%%, trailing stop -%.0f%% from peak)",
+        ticker, quantity, price, config.SAME_DAY_TARGET_PCT * 100, config.TRAILING_STOP_PCT * 100,
     )
     return True
 
@@ -95,8 +93,19 @@ def _sell(position, price, reason):
     log.info("SELL %s x%d @ %.2f (%s)", ticker, quantity, price, reason)
 
 
+def _past_market_close(now_ist):
+    close_minutes = config.MARKET_CLOSE_IST_HOUR * 60 + config.MARKET_CLOSE_IST_MINUTE
+    return now_ist.hour * 60 + now_ist.minute >= close_minutes
+
+
 def check_exits():
-    """Poll all open positions and exit any that hit stop-loss or target."""
+    """Every open position is intraday-only: sell on a same-day target, a stop that
+    trails below the peak price since entry, or a forced close near market close —
+    whichever comes first. A position somehow still open past its entry day (e.g. the
+    bot was down at close) is force-closed immediately as a safety net."""
+    now = datetime.now(timezone.utc)
+    now_ist = now.astimezone(storage.IST)
+
     for position in storage.get_open_positions():
         ticker = position["ticker"]
         try:
@@ -105,7 +114,23 @@ def check_exits():
             log.exception("Could not fetch price for %s while checking exits", ticker)
             continue
 
-        if price <= position["stop_loss_price"]:
-            _sell(position, price, "stop-loss")
-        elif price >= position["target_price"]:
-            _sell(position, price, "target")
+        if not storage._same_ist_day(position["entry_time"], now):
+            _sell(position, price, "stale-position-force-close")
+            continue
+
+        if price >= position["entry_price"] * (1 + config.SAME_DAY_TARGET_PCT):
+            _sell(position, price, "same-day-target")
+            continue
+
+        peak_price = max(position["peak_price"], price)
+        trailing_stop = peak_price * (1 - config.TRAILING_STOP_PCT)
+        if price <= trailing_stop:
+            _sell(position, price, "trailing-stop")
+            continue
+
+        if _past_market_close(now_ist):
+            _sell(position, price, "end-of-day")
+            continue
+
+        if peak_price != position["peak_price"]:
+            storage.update_peak_price(ticker, peak_price)

@@ -104,10 +104,25 @@ def _entry_date_and_row(history, signal_date):
     return None, None
 
 
+def _resolve_same_day(entry_price, day_row):
+    """Apply the intraday exit rules to a single day's OHLC and return (exit_price,
+    reason). Every position closes the same day it opens — same-day target first,
+    then a stop trailing below the day's peak, else forced-close at day's close."""
+    target_price = entry_price * (1 + config.SAME_DAY_TARGET_PCT)
+    if day_row["High"] >= target_price:
+        return target_price, "same-day-target"
+
+    peak = max(entry_price, float(day_row["High"]))
+    trailing_stop = peak * (1 - config.TRAILING_STOP_PCT)
+    if day_row["Low"] <= trailing_stop:
+        return trailing_stop, "trailing-stop"
+
+    return float(day_row["Close"]), "end-of-day"
+
+
 def simulate(signals, excellent_signals=None):
     excellent_signals = excellent_signals if excellent_signals is not None else set()
     cash = config.STARTING_CAPITAL_INR
-    open_positions = {}  # ticker -> dict
     trades = []
     histories = {}  # ticker -> DataFrame, fetched once per ticker
     today = datetime.now(timezone.utc)
@@ -183,164 +198,82 @@ def simulate(signals, excellent_signals=None):
             {
                 "ticker": ticker,
                 "pead_score": card["pead_score"],
-                "signal_date": signal["date"],
                 "entry_date": entry_date,
+                "entry_row": entry_row,
                 "entry_price": entry_price,
             }
         )
 
     candidates.sort(key=lambda c: c["entry_date"])
-    if not candidates:
-        return trades, cash, open_positions
 
-    all_dates = sorted({c["entry_date"] for c in candidates})
-    current_date = all_dates[0]
-    end_date = today.date()
+    # Every position resolves the same day it opens, so the only thing that carries
+    # from one entry date to the next is cash — no multi-day position tracking needed.
+    open_count_by_date = {}
+    for candidate in candidates:
+        entry_date = candidate["entry_date"]
+        ticker = candidate["ticker"]
+        open_count_by_date.setdefault(entry_date, 0)
 
-    while current_date.date() <= end_date:
-        # 1. Check exits for open positions on this date.
-        for ticker in list(open_positions):
-            history = histories[ticker]
-            if current_date not in history.index:
-                continue
-            row = history.loc[current_date]
-            pos = open_positions[ticker]
-            if row["Low"] <= pos["stop_loss_price"]:
-                _close(trades, open_positions, ticker, current_date, pos["stop_loss_price"], "stop-loss")
-                cash += pos["quantity"] * pos["stop_loss_price"]
-            elif row["High"] >= pos["target_price"]:
-                _close(trades, open_positions, ticker, current_date, pos["target_price"], "target")
-                cash += pos["quantity"] * pos["target_price"]
+        if open_count_by_date[entry_date] >= config.MAX_OPEN_POSITIONS:
+            log.info("Skip %s on %s: max open positions reached", ticker, entry_date.date())
+            continue
 
-        # 2. Take new entries scheduled for this date.
-        for candidate in [c for c in candidates if c["entry_date"] == current_date]:
-            ticker = candidate["ticker"]
-            if ticker in open_positions:
-                continue
-            if len(open_positions) >= config.MAX_OPEN_POSITIONS:
-                log.info("Skip %s on %s: max open positions reached", ticker, current_date.date())
-                continue
+        entry_price = candidate["entry_price"]
+        allocation = min(cash, config.MAX_POSITION_VALUE_INR)
+        quantity = math.floor(allocation / entry_price)
+        cost = quantity * entry_price
+        if quantity < 1 or cost > cash:
+            log.info("Skip %s on %s: insufficient cash", ticker, entry_date.date())
+            continue
 
-            price = candidate["entry_price"]
-            allocation = min(cash, config.MAX_POSITION_VALUE_INR)
-            quantity = math.floor(allocation / price)
-            cost = quantity * price
-            if quantity < 1 or cost > cash:
-                log.info("Skip %s on %s: insufficient cash", ticker, current_date.date())
-                continue
+        cash -= cost
+        open_count_by_date[entry_date] += 1
 
-            cash -= cost
-            open_positions[ticker] = {
-                "quantity": quantity,
-                "entry_price": price,
-                "entry_date": current_date,
-                "pead_score": candidate["pead_score"],
-                "stop_loss_price": price * (1 - config.STOP_LOSS_PCT),
-                "target_price": price * (1 + config.TARGET_PCT),
-            }
+        exit_price, reason = _resolve_same_day(entry_price, candidate["entry_row"])
+        cash += quantity * exit_price
 
-        current_date += timedelta(days=1)
-
-    return trades, cash, open_positions
-
-
-def _close(trades, open_positions, ticker, exit_date, exit_price, reason):
-    pos = open_positions.pop(ticker)
-    pnl = (exit_price - pos["entry_price"]) * pos["quantity"]
-    pnl_pct = (exit_price / pos["entry_price"] - 1) * 100
-    trades.append(
-        {
-            "ticker": ticker,
-            "pead_score": pos["pead_score"],
-            "entry_date": pos["entry_date"],
-            "entry_price": round(pos["entry_price"], 2),
-            "exit_date": exit_date,
-            "exit_price": round(exit_price, 2),
-            "reason": reason,
-            "pnl_pct": round(pnl_pct, 2),
-            "pnl_amount": round(pnl, 2),
-        }
-    )
-
-
-def _mark_to_market(open_positions):
-    """Fetch today's price for each open position and compute unrealized P&L.
-    Returns (rows, total_unrealized_pnl); a position whose price can't be
-    fetched is marked at entry price (0 P&L) rather than dropped."""
-    rows = []
-    total = 0.0
-    for ticker, pos in open_positions.items():
-        try:
-            current_price = price_feed.get_last_price(ticker)
-        except Exception:
-            log.warning("Could not fetch current price for open position %s, marking at entry", ticker)
-            current_price = pos["entry_price"]
-        pnl = pos["quantity"] * (current_price - pos["entry_price"])
-        pnl_pct = (current_price / pos["entry_price"] - 1) * 100
-        total += pnl
-        rows.append(
+        pnl = quantity * (exit_price - entry_price)
+        pnl_pct = (exit_price / entry_price - 1) * 100
+        trades.append(
             {
                 "ticker": ticker,
-                "pead_score": pos["pead_score"],
-                "entry_date": pos["entry_date"],
-                "entry_price": round(pos["entry_price"], 2),
-                "current_price": round(current_price, 2),
+                "pead_score": candidate["pead_score"],
+                "entry_date": entry_date,
+                "entry_price": round(entry_price, 2),
+                "exit_price": round(exit_price, 2),
+                "reason": reason,
                 "pnl_pct": round(pnl_pct, 2),
                 "pnl_amount": round(pnl, 2),
             }
         )
-    return rows, total
+
+    return trades, cash
 
 
-def report(trades, cash, open_positions):
-    wins = [t for t in trades if t["reason"] == "target"]
-    losses = [t for t in trades if t["reason"] == "stop-loss"]
-    realized_pnl = sum(t["pnl_amount"] for t in trades)
-
-    open_rows, unrealized_pnl = _mark_to_market(open_positions)
-    ending_value = cash + sum(
-        p["quantity"] * next(r["current_price"] for r in open_rows if r["ticker"] == t)
-        for t, p in open_positions.items()
-    )
+def report(trades, cash):
+    wins = [t for t in trades if t["reason"] == "same-day-target"]
+    losses = [t for t in trades if t["reason"] == "trailing-stop"]
+    flat = [t for t in trades if t["reason"] == "end-of-day"]
+    total_pnl = sum(t["pnl_amount"] for t in trades)
 
     print("\n=== Backtest Summary ===")
-    print(f"Closed trades: {len(trades)}  (wins: {len(wins)}, losses: {len(losses)})")
+    print(f"Trades: {len(trades)}  (target hit: {len(wins)}, trailing-stop: {len(losses)}, end-of-day: {len(flat)})")
     if trades:
         win_rate = len(wins) / len(trades) * 100
         avg_return = sum(t["pnl_pct"] for t in trades) / len(trades)
-        print(f"Win rate: {win_rate:.1f}%")
+        print(f"Win rate (target hit): {win_rate:.1f}%")
         print(f"Average return per trade: {avg_return:.2f}%")
-    print(f"Realized P&L (closed trades): Rs {realized_pnl:,.2f}")
-    print(f"Unrealized P&L ({len(open_rows)} open, marked at today's price): Rs {unrealized_pnl:,.2f}")
-    print(f"Total P&L (realized + unrealized): Rs {realized_pnl + unrealized_pnl:,.2f}")
+    print(f"Total P&L: Rs {total_pnl:,.2f}")
     print(f"Starting capital: Rs {config.STARTING_CAPITAL_INR:,.2f}")
-    print(f"Ending value (cash + open, mark-to-market): Rs {ending_value:,.2f}")
-    print(
-        f"Return on starting capital: "
-        f"{(ending_value / config.STARTING_CAPITAL_INR - 1) * 100:.2f}%"
-    )
-
-    if open_rows:
-        print(f"\n{'Ticker':<16}{'Score':>6}  {'Entry':>10}{'Current':>10}{'PnL%':>8}  PnL(Rs)")
-        for r in sorted(open_rows, key=lambda x: -x["pnl_pct"]):
-            print(
-                f"{r['ticker']:<16}{r['pead_score']:>6}  {r['entry_price']:>10}"
-                f"{r['current_price']:>10}{r['pnl_pct']:>7}%  {r['pnl_amount']}"
-            )
+    print(f"Ending cash: Rs {cash:,.2f}")
+    print(f"Return on starting capital: {(cash / config.STARTING_CAPITAL_INR - 1) * 100:.2f}%")
 
     if trades:
         with open(config.BACKTEST_TRADES_CSV_PATH, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(trades[0].keys()))
             writer.writeheader()
             writer.writerows(trades)
-        print(f"\nClosed trade detail written to {config.BACKTEST_TRADES_CSV_PATH}")
-
-    if open_rows:
-        with open(config.BACKTEST_OPEN_POSITIONS_CSV_PATH, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(open_rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(open_rows)
-        print(f"Open position detail written to {config.BACKTEST_OPEN_POSITIONS_CSV_PATH}")
+        print(f"\nTrade detail written to {config.BACKTEST_TRADES_CSV_PATH}")
 
 
 async def main():
@@ -353,8 +286,8 @@ async def main():
 
     excellent_signals = await fetch_excellent_signals(client)
 
-    trades, cash, open_positions = simulate(signals, excellent_signals)
-    report(trades, cash, open_positions)
+    trades, cash = simulate(signals, excellent_signals)
+    report(trades, cash)
 
     await client.disconnect()
 

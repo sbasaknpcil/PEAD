@@ -35,8 +35,16 @@ MAX_POSITION_VALUE_INR = _float("MAX_POSITION_VALUE_INR", 100_000)
 MAX_OPEN_POSITIONS = _int("MAX_OPEN_POSITIONS", 10)
 
 PEAD_BUY_SCORE_MIN = _float("PEAD_BUY_SCORE_MIN", 50)
-STOP_LOSS_PCT = _float("STOP_LOSS_PCT", 0.08)
-TARGET_PCT = _float("TARGET_PCT", 0.15)
+
+# Exit strategy: intraday only, position always closes same day as entry.
+# Sell immediately on a same-day gain of this size...
+SAME_DAY_TARGET_PCT = _float("SAME_DAY_TARGET_PCT", 0.05)
+# ...otherwise a stop that trails 2% below the highest price seen since entry...
+TRAILING_STOP_PCT = _float("TRAILING_STOP_PCT", 0.02)
+# ...otherwise force-close at whatever price is available once the market's about to shut.
+MARKET_CLOSE_IST_HOUR = _int("MARKET_CLOSE_IST_HOUR", 15)
+MARKET_CLOSE_IST_MINUTE = _int("MARKET_CLOSE_IST_MINUTE", 25)
+
 REQUIRE_ABOVE_200DMA = os.environ.get("REQUIRE_ABOVE_200DMA", "true").lower() != "false"
 MIN_MARKET_CAP_CR = _float("MIN_MARKET_CAP_CR", 2000)
 RSI_PERIOD = _int("RSI_PERIOD", 14)
@@ -51,4 +59,3 @@ IMAGE_CACHE_DIR.mkdir(exist_ok=True)
 BACKTEST_LOOKBACK_DAYS = _int("BACKTEST_LOOKBACK_DAYS", 90)
 BACKTEST_SIGNAL_CACHE_PATH = str(BASE_DIR / "backtest_signal_cache.json")
 BACKTEST_TRADES_CSV_PATH = str(BASE_DIR / "backtest_trades.csv")
-BACKTEST_OPEN_POSITIONS_CSV_PATH = str(BASE_DIR / "backtest_open_positions.csv")

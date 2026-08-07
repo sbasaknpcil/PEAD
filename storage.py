@@ -27,8 +27,7 @@ CREATE TABLE IF NOT EXISTS positions (
     quantity INTEGER NOT NULL,
     entry_price REAL NOT NULL,
     entry_time TEXT NOT NULL,
-    stop_loss_price REAL NOT NULL,
-    target_price REAL NOT NULL,
+    peak_price REAL NOT NULL,
     pead_score REAL NOT NULL
 );
 
@@ -73,8 +72,38 @@ def _conn():
         conn.close()
 
 
+def _migrate_positions_table(conn):
+    """Old schema had stop_loss_price/target_price (fixed exits); the new
+    same-day trailing-stop strategy uses peak_price instead. Migrate any
+    existing open positions rather than losing them on a schema change."""
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(positions)").fetchall()]
+    if not cols or "peak_price" in cols:
+        return  # fresh DB (table doesn't exist yet) or already migrated
+
+    old_rows = conn.execute("SELECT * FROM positions").fetchall()
+    conn.execute("DROP TABLE positions")
+    conn.execute(
+        """CREATE TABLE positions (
+            ticker TEXT PRIMARY KEY,
+            quantity INTEGER NOT NULL,
+            entry_price REAL NOT NULL,
+            entry_time TEXT NOT NULL,
+            peak_price REAL NOT NULL,
+            pead_score REAL NOT NULL
+        )"""
+    )
+    for row in old_rows:
+        conn.execute(
+            """INSERT INTO positions (ticker, quantity, entry_price, entry_time, peak_price, pead_score)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (row["ticker"], row["quantity"], row["entry_price"], row["entry_time"],
+             row["entry_price"], row["pead_score"]),  # peak_price starts at entry_price, self-corrects on next check
+        )
+
+
 def init_db():
     with _conn() as conn:
+        _migrate_positions_table(conn)
         conn.executescript(SCHEMA)
         row = conn.execute("SELECT cash FROM portfolio WHERE id = 1").fetchone()
         if row is None:
@@ -105,22 +134,26 @@ def get_position(ticker):
         return dict(row) if row else None
 
 
-def open_position(ticker, quantity, entry_price, stop_loss_price, target_price, pead_score):
+def open_position(ticker, quantity, entry_price, pead_score):
     with _conn() as conn:
         conn.execute(
             """INSERT INTO positions
-               (ticker, quantity, entry_price, entry_time, stop_loss_price, target_price, pead_score)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (ticker, quantity, entry_price, entry_time, peak_price, pead_score)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 ticker,
                 quantity,
                 entry_price,
                 datetime.now(timezone.utc).isoformat(),
-                stop_loss_price,
-                target_price,
+                entry_price,
                 pead_score,
             ),
         )
+
+
+def update_peak_price(ticker, peak_price):
+    with _conn() as conn:
+        conn.execute("UPDATE positions SET peak_price = ? WHERE ticker = ?", (peak_price, ticker))
 
 
 def close_position(ticker):

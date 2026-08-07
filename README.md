@@ -9,17 +9,24 @@ local SQLite database.**
 
 ## Strategy
 
-- **Buy**: PEAD score >= 50, price above its 200-day moving average, and not
-  overridden by a sanity check (skip if Revenue and Net Profit on the same
-  card both declined QoQ and YoY, since that contradicts a bullish score).
+- **Buy**: PEAD score >= 50, price above its 200-day moving average, market
+  cap >= Rs 2,000 Cr, RSI(14) > 50, and not overridden by a sanity check (skip
+  if Revenue and Net Profit on the same card both declined QoQ and YoY, since
+  that contradicts a bullish score). A buy also requires the `earnings_pulse`
+  channel to independently rate the same stock "Excellent" the same (IST)
+  calendar day — whichever of the two signals arrives second triggers the
+  trade.
 - **Ticker resolution**: cards that show an NSE ticker use it directly. Cards
   that only show a BSE code fall back to resolving the company name to a
   tradeable Yahoo Finance symbol (NSE preferred, BSE otherwise) — many
   BSE-labeled companies are actually dual-listed.
 - **Position size**: fixed Rs 100,000 per trade, capped at 10 concurrent open
   positions (all configurable in `.env`).
-- **Exit**: stop-loss at -8% or target at +15% from entry, checked every 5
-  minutes.
+- **Exit — intraday only, every position closes the same day it opens**,
+  checked every 5 minutes: sell immediately on a same-day gain of +5% from
+  entry; otherwise a stop-loss that trails 2% below the highest price seen
+  since entry (so it only ever ratchets up, never down); otherwise a forced
+  close near market close (15:25 IST) if neither has triggered yet.
 
 ## Setup
 
