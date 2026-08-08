@@ -37,8 +37,8 @@ async def _handle_message(message):
     ticker, rating = parsed
 
     log.info("%s: %s", ticker, rating)
-    if rating.lower() == config.CONFIRMATION_RATING_LABEL.lower():
-        portfolio.handle_excellent_signal(ticker)
+    if rating.lower() == config.BUY_RATING_LABEL.lower():
+        portfolio.buy(ticker)
 
 
 def register(client, channel_entity):

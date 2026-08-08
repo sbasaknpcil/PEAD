@@ -42,10 +42,12 @@ async def run_client():
     earnings_pulse_listener.register(client, confirmation_entity)
 
     log.info(
-        "Listening for PEAD cards in topic %s of group %s, confirming against '%s' "
-        "(paper trading, cash=%.2f)",
-        config.TELEGRAM_PEAD_TOPIC_ID, config.TELEGRAM_GROUP_ID,
-        config.CONFIRMATION_CHANNEL, storage.get_cash(),
+        "Buying every '%s' rating from '%s' during market hours (%02d:%02d-%02d:%02d IST); "
+        "PEAD topic %s of group %s logged for reference only (paper trading, cash=%.2f)",
+        config.BUY_RATING_LABEL, config.CONFIRMATION_CHANNEL,
+        config.MARKET_OPEN_IST_HOUR, config.MARKET_OPEN_IST_MINUTE,
+        config.MARKET_CLOSE_IST_HOUR, config.MARKET_CLOSE_IST_MINUTE,
+        config.TELEGRAM_PEAD_TOPIC_ID, config.TELEGRAM_GROUP_ID, storage.get_cash(),
     )
 
     await client.run_until_disconnected()

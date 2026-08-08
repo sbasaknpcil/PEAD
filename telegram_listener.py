@@ -4,9 +4,6 @@ from telethon import events
 from telethon.tl.types import PeerChannel
 
 import config
-import portfolio
-import price_feed
-import rules
 import storage
 import vision_parser
 
@@ -33,6 +30,9 @@ async def is_from_signal_source(client, message):
 
 
 async def _handle_card(client, message):
+    """PEAD cards are downloaded and logged for reference only - the live strategy
+    buys on an earnings_pulse rating alone (see earnings_pulse_listener), so nothing
+    here triggers a trade."""
     if storage.is_message_processed(message.chat_id, message.id):
         return
     storage.mark_message_processed(message.chat_id, message.id)
@@ -51,15 +51,10 @@ async def _handle_card(client, message):
         log.exception("Failed to parse card %s", image_path)
         return
 
-    ticker = card.get("nse_ticker") or price_feed.resolve_symbol(card.get("company_name"))
-    if not ticker:
-        log.warning("Card had no NSE ticker and none could be resolved, skipping: %s", card)
-        return
-
-    should_buy, reason = rules.decide_buy(card)
-    log.info("%s: %s", ticker, reason)
-    if should_buy:
-        portfolio.handle_pead_signal(ticker, card.get("pead_score"))
+    log.info(
+        "PEAD card (informational only): %s, score=%s",
+        card.get("nse_ticker") or card.get("company_name"), card.get("pead_score"),
+    )
 
 
 def register(client, group_entity):

@@ -9,28 +9,23 @@ local SQLite database.**
 
 ## Strategy
 
-- **Buy**: PEAD score >= 50, price above its 200-day moving average, market
-  cap >= Rs 2,000 Cr, RSI(14) > 50, and not overridden by a sanity check (skip
-  if Revenue and Net Profit on the same card both declined QoQ and YoY, since
-  that contradicts a bullish score). A buy also requires the `earnings_pulse`
-  channel to independently rate the same stock "Excellent" the same (IST)
-  calendar day — whichever of the two signals arrives second triggers the
-  trade. The trade is only actually placed if that confirmation lands during
-  NSE trading hours (09:15-15:25 IST) — since every position must exit the
-  same day it opens, a signal confirmed after hours would have no real
-  trading window and is skipped entirely rather than bought and immediately
-  force-closed near the same price.
-- **Ticker resolution**: cards that show an NSE ticker use it directly. Cards
-  that only show a BSE code fall back to resolving the company name to a
-  tradeable Yahoo Finance symbol (NSE preferred, BSE otherwise) — many
-  BSE-labeled companies are actually dual-listed.
+- **Buy**: any stock the `earnings_pulse` Telegram channel rates "Excellent"
+  gets bought immediately — no PEAD score, 200DMA, RSI, or market-cap check.
+  The buy only actually places if the rating lands during NSE trading hours
+  (09:15-15:30 IST) — since every position must exit the same day it opens, a
+  rating outside that window has no real trading window and is skipped
+  entirely rather than bought and immediately force-closed near the same
+  price. PEAD cards from the "PEAD" topic are still downloaded and logged for
+  reference, but don't gate anything.
+- **Ticker resolution**: the channel posts a bare ticker (`#TICKER`); resolved
+  to a tradeable Yahoo Finance symbol (NSE preferred, BSE otherwise).
 - **Position size**: fixed Rs 100,000 per trade, capped at 10 concurrent open
   positions (all configurable in `.env`).
-- **Exit — intraday only, every position closes the same day it opens**,
-  checked every 5 minutes: sell immediately on a same-day gain of +5% from
-  entry; otherwise a stop-loss that trails 2% below the highest price seen
-  since entry (so it only ever ratchets up, never down); otherwise a forced
-  close near market close (15:25 IST) if neither has triggered yet.
+- **Exit — intraday only, every position closes the same day it opens, no
+  upper target**, checked every 5 minutes: a stop-loss that trails 2% below
+  the highest price seen since entry (so it only ever ratchets up, never
+  down); otherwise a forced close near market close (15:30 IST) if it hasn't
+  triggered yet.
 
 ## Setup
 
@@ -54,9 +49,11 @@ unattended for extended periods.
 
 ## Other scripts
 
-- `python backtest.py` — walks historical PEAD cards through the same rules
-  with realistic capital constraints, reports win rate/return, writes
-  `backtest_trades.csv`.
+- `python backtest.py` — walks historical `earnings_pulse` "Excellent" ratings
+  through the same immediate-buy/trailing-stop rules using 5-minute intraday
+  bars (last `INTRADAY_BACKTEST_LOOKBACK_DAYS`, default 7 — Yahoo only keeps
+  ~60 days of 5m history), with realistic capital constraints, reports win
+  rate/return, writes `backtest_trades.csv`.
 - `python list_signals.py` — lists historical cards above the score
   threshold. Override lookback window per-run, e.g.
   `BACKTEST_LOOKBACK_DAYS=7 python list_signals.py`.

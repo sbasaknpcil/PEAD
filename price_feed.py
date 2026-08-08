@@ -63,6 +63,18 @@ def get_history(nse_ticker, start, end):
     return df
 
 
+def get_intraday_history(nse_ticker, start, end, interval="5m"):
+    """Intraday OHLC for an NSE symbol between start and end (tz-aware datetimes).
+    Yahoo only retains intraday bars for a trailing window (~60 days for 5m), so
+    this is for recent/backtest-a-few-weeks use, not the multi-month daily history."""
+    df = yf.download(_symbol(nse_ticker), start=start, end=end, interval=interval, progress=False, auto_adjust=False)
+    if df.empty:
+        return df
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+
 def get_200dma(nse_ticker):
     """200-day simple moving average of Close, or None if there isn't enough history."""
     now = datetime.now()

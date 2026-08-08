@@ -10,7 +10,6 @@ from telethon import TelegramClient
 import config
 import earnings_pulse_listener
 import price_feed
-import rules
 import storage
 import telegram_listener
 import vision_parser
@@ -76,192 +75,173 @@ async def fetch_signals(client):
     return signals
 
 
-async def fetch_excellent_signals(client):
-    """Return {(bare_ticker, ist_date)} for every historical 'excellent'-rated message
-    on the confirmation channel, within the same lookback window as fetch_signals."""
+async def fetch_excellent_ratings(client, lookback_days):
+    """Return [{ticker, date (aware datetime)}] for every BUY_RATING_LABEL-rated
+    message on the confirmation channel within lookback_days, oldest first."""
     channel_entity = await earnings_pulse_listener.resolve_channel(client)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=config.BACKTEST_LOOKBACK_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
-    excellent = set()
+    ratings = []
     async for message in client.iter_messages(channel_entity, offset_date=cutoff, reverse=True):
         parsed = earnings_pulse_listener._parse_rating(message.text)
         if parsed is None:
             continue
         ticker, rating = parsed
-        if rating.lower() == config.CONFIRMATION_RATING_LABEL.lower():
-            excellent.add((ticker.upper(), message.date.astimezone(storage.IST).date()))
+        if rating.lower() == config.BUY_RATING_LABEL.lower():
+            ratings.append({"ticker": ticker.upper(), "date": message.date})
 
-    log.info("Found %d historical 'excellent' signals", len(excellent))
-    return excellent
-
-
-def _entry_date_and_row(history, signal_date):
-    """First trading day strictly after signal_date, and that day's OHLC row."""
-    signal_day = signal_date.date()
-    for idx in history.index:
-        if idx.date() > signal_day:
-            return idx, history.loc[idx]
-    return None, None
+    ratings.sort(key=lambda r: r["date"])
+    log.info("Found %d '%s' ratings in the last %d days", len(ratings), config.BUY_RATING_LABEL, lookback_days)
+    return ratings
 
 
-def _resolve_same_day(entry_price, day_row):
-    """Apply the intraday exit rules to a single day's OHLC and return (exit_price,
-    reason). Every position closes the same day it opens — same-day target first,
-    then a stop trailing below the day's peak, else forced-close at day's close."""
-    target_price = entry_price * (1 + config.SAME_DAY_TARGET_PCT)
-    if day_row["High"] >= target_price:
-        return target_price, "same-day-target"
-
-    peak = max(entry_price, float(day_row["High"]))
-    trailing_stop = peak * (1 - config.TRAILING_STOP_PCT)
-    if day_row["Low"] <= trailing_stop:
-        return trailing_stop, "trailing-stop"
-
-    return float(day_row["Close"]), "end-of-day"
+def _within_market_hours(date_ist):
+    open_minutes = config.MARKET_OPEN_IST_HOUR * 60 + config.MARKET_OPEN_IST_MINUTE
+    close_minutes = config.MARKET_CLOSE_IST_HOUR * 60 + config.MARKET_CLOSE_IST_MINUTE
+    minutes = date_ist.hour * 60 + date_ist.minute
+    return open_minutes <= minutes < close_minutes
 
 
-def simulate(signals, excellent_signals=None):
-    excellent_signals = excellent_signals if excellent_signals is not None else set()
+def _resolve_intraday_trade(signal_time, intraday_history):
+    """Simulate one immediate-buy/trailing-stop trade from 5m bars on the signal's
+    trading day. Entry is the first bar at/after the signal time (approximating an
+    immediate market order); exit is a 2% trailing stop off the peak High seen since
+    entry, or the day's last bar close if never triggered — no upper target."""
+    day = intraday_history[intraday_history.index.date == signal_time.date()]
+    day = day[day.index >= signal_time]
+    if day.empty:
+        return None
+
+    entry_time = day.index[0]
+    entry_price = float(day.iloc[0]["Open"])
+
+    peak = entry_price
+    for ts, row in day.iloc[1:].iterrows():
+        peak = max(peak, float(row["High"]))
+        trailing_stop = peak * (1 - config.TRAILING_STOP_PCT)
+        if row["Low"] <= trailing_stop:
+            return {
+                "entry_time": entry_time, "entry_price": entry_price,
+                "exit_time": ts, "exit_price": trailing_stop, "reason": "trailing-stop",
+            }
+
+    return {
+        "entry_time": entry_time, "entry_price": entry_price,
+        "exit_time": day.index[-1], "exit_price": float(day.iloc[-1]["Close"]), "reason": "end-of-day",
+    }
+
+
+def simulate_intraday(ratings, lookback_days):
+    """Buy every rating immediately during market hours, no PEAD/200DMA/RSI/mcap
+    filter, exit on a 2% trailing stop or forced end-of-day close — mirrors the live
+    single-trigger strategy exactly, using 5m bars so 'immediately' is precise."""
     cash = config.STARTING_CAPITAL_INR
-    trades = []
-    histories = {}  # ticker -> DataFrame, fetched once per ticker
+    histories = {}
     today = datetime.now(timezone.utc)
+    fetch_start = today - timedelta(days=lookback_days + 1)
 
-    def get_history(ticker):
-        if ticker not in histories:
-            # Extra lookback so a 200-day moving average can be computed as of each
-            # signal's entry date, not just from the start of the backtest window.
-            start = today - timedelta(days=config.BACKTEST_LOOKBACK_DAYS + 290)
-            histories[ticker] = price_feed.get_history(ticker, start, today + timedelta(days=1))
-        return histories[ticker]
-
-    def dma_200_before(ticker, entry_date):
-        history = histories[ticker]
-        prior_closes = history.loc[history.index < entry_date, "Close"]
-        if len(prior_closes) < price_feed.DMA_WINDOW_DAYS:
-            return None
-        return float(prior_closes.tail(price_feed.DMA_WINDOW_DAYS).mean())
-
-    def rsi_before(ticker, entry_date):
-        history = histories[ticker]
-        prior_closes = history.loc[history.index < entry_date, "Close"]
-        return price_feed.rsi_from_closes(prior_closes, config.RSI_PERIOD)
-
-    # Resolve a candidate entry (date, price) for every signal that passes the buy rule.
     candidates = []
-    for signal in signals:
-        card = signal["card"]
-        should_buy, reason = rules.decide_buy(card)
-        log.info("%s (%s): %s", card.get("nse_ticker") or card.get("company_name"), signal["date"].date(), reason)
-        if not should_buy:
-            continue
-
-        ticker = card.get("nse_ticker") or price_feed.resolve_symbol(card.get("company_name"))
-        if not ticker:
-            log.warning("Could not resolve a ticker for %s, skipping signal", card.get("company_name"))
-            continue
-
-        bare_ticker = storage._bare_ticker(ticker)
-        signal_ist_date = signal["date"].astimezone(storage.IST).date()
-        if (bare_ticker, signal_ist_date) not in excellent_signals:
+    for rating in ratings:
+        signal_ist = rating["date"].astimezone(storage.IST)
+        if not _within_market_hours(signal_ist):
             log.info(
-                "%s (%s): skipped, not confirmed by an 'excellent' signal the same day",
-                ticker, signal_ist_date,
+                "%s (%s IST): skipped, outside market hours",
+                rating["ticker"], signal_ist.strftime("%Y-%m-%d %H:%M"),
             )
             continue
 
-        history = get_history(ticker)
-        if history.empty:
-            log.warning("No price history for %s, skipping signal", ticker)
+        ticker = price_feed.resolve_symbol(rating["ticker"]) or f"{rating['ticker']}.NS"
+        if ticker not in histories:
+            try:
+                history = price_feed.get_intraday_history(ticker, fetch_start, today + timedelta(days=1))
+            except Exception:
+                log.warning("Could not fetch intraday history for %s", ticker)
+                history = None
+            histories[ticker] = history
+        history = histories[ticker]
+        if history is None or history.empty:
+            log.info("%s: no intraday data available, skipping", ticker)
             continue
 
-        entry_date, entry_row = _entry_date_and_row(history, signal["date"])
-        if entry_date is None:
-            continue  # signal too recent to have a next trading day yet
-        entry_price = float(entry_row["Open"])
+        signal_local = rating["date"].astimezone(history.index.tz)
+        trade = _resolve_intraday_trade(signal_local, history)
+        if trade is None:
+            log.info("%s (%s IST): no intraday bars at/after signal time, skipping", ticker, signal_ist)
+            continue
 
-        if config.REQUIRE_ABOVE_200DMA:
-            dma_200 = dma_200_before(ticker, entry_date)
-            if not rules.is_above_200dma(entry_price, dma_200):
-                log.info(
-                    "%s (%s): skipped, price %.2f not above 200DMA %s",
-                    ticker, entry_date.date(), entry_price, dma_200,
-                )
+        candidates.append({"ticker": ticker, **trade})
+
+    # Chronological event simulation so overlapping positions correctly compete for
+    # cash and MAX_OPEN_POSITIONS slots, same as the live bot would encounter them.
+    events = []
+    for idx, c in enumerate(candidates):
+        events.append((c["entry_time"], 1, idx))  # exits (0) before entries (1) at a tie
+        events.append((c["exit_time"], 0, idx))
+    events.sort(key=lambda e: (e[0], e[1]))
+
+    trades = []
+    open_count = 0
+    opened = [False] * len(candidates)
+    entry_cost = [0.0] * len(candidates)
+    entry_qty = [0] * len(candidates)
+
+    for ts, _, idx in events:
+        c = candidates[idx]
+        is_entry = ts == c["entry_time"]
+        if is_entry:
+            if open_count >= config.MAX_OPEN_POSITIONS:
+                log.info("Skip %s: max open positions reached at %s", c["ticker"], ts)
                 continue
+            allocation = min(cash, config.MAX_POSITION_VALUE_INR)
+            quantity = math.floor(allocation / c["entry_price"])
+            cost = quantity * c["entry_price"]
+            if quantity < 1 or cost > cash:
+                log.info("Skip %s: insufficient cash at %s", c["ticker"], ts)
+                continue
+            cash -= cost
+            open_count += 1
+            opened[idx] = True
+            entry_cost[idx] = cost
+            entry_qty[idx] = quantity
+        else:
+            if not opened[idx]:
+                continue
+            quantity = entry_qty[idx]
+            proceeds = quantity * c["exit_price"]
+            cash += proceeds
+            open_count -= 1
+            pnl = proceeds - entry_cost[idx]
+            pnl_pct = (c["exit_price"] / c["entry_price"] - 1) * 100
+            trades.append(
+                {
+                    "ticker": c["ticker"],
+                    "entry_time": c["entry_time"],
+                    "entry_price": round(c["entry_price"], 2),
+                    "exit_time": c["exit_time"],
+                    "exit_price": round(c["exit_price"], 2),
+                    "quantity": quantity,
+                    "reason": c["reason"],
+                    "pnl_pct": round(pnl_pct, 2),
+                    "pnl_amount": round(pnl, 2),
+                }
+            )
 
-        rsi = rsi_before(ticker, entry_date)
-        if not rules.passes_rsi(rsi):
-            log.info("%s (%s): skipped, RSI %s below minimum %s", ticker, entry_date.date(), rsi, config.RSI_MIN)
-            continue
-
-        candidates.append(
-            {
-                "ticker": ticker,
-                "pead_score": card["pead_score"],
-                "entry_date": entry_date,
-                "entry_row": entry_row,
-                "entry_price": entry_price,
-            }
-        )
-
-    candidates.sort(key=lambda c: c["entry_date"])
-
-    # Every position resolves the same day it opens, so the only thing that carries
-    # from one entry date to the next is cash — no multi-day position tracking needed.
-    open_count_by_date = {}
-    for candidate in candidates:
-        entry_date = candidate["entry_date"]
-        ticker = candidate["ticker"]
-        open_count_by_date.setdefault(entry_date, 0)
-
-        if open_count_by_date[entry_date] >= config.MAX_OPEN_POSITIONS:
-            log.info("Skip %s on %s: max open positions reached", ticker, entry_date.date())
-            continue
-
-        entry_price = candidate["entry_price"]
-        allocation = min(cash, config.MAX_POSITION_VALUE_INR)
-        quantity = math.floor(allocation / entry_price)
-        cost = quantity * entry_price
-        if quantity < 1 or cost > cash:
-            log.info("Skip %s on %s: insufficient cash", ticker, entry_date.date())
-            continue
-
-        cash -= cost
-        open_count_by_date[entry_date] += 1
-
-        exit_price, reason = _resolve_same_day(entry_price, candidate["entry_row"])
-        cash += quantity * exit_price
-
-        pnl = quantity * (exit_price - entry_price)
-        pnl_pct = (exit_price / entry_price - 1) * 100
-        trades.append(
-            {
-                "ticker": ticker,
-                "pead_score": candidate["pead_score"],
-                "entry_date": entry_date,
-                "entry_price": round(entry_price, 2),
-                "exit_price": round(exit_price, 2),
-                "reason": reason,
-                "pnl_pct": round(pnl_pct, 2),
-                "pnl_amount": round(pnl, 2),
-            }
-        )
-
+    trades.sort(key=lambda t: t["entry_time"])
     return trades, cash
 
 
 def report(trades, cash):
-    wins = [t for t in trades if t["reason"] == "same-day-target"]
-    losses = [t for t in trades if t["reason"] == "trailing-stop"]
+    stopped = [t for t in trades if t["reason"] == "trailing-stop"]
     flat = [t for t in trades if t["reason"] == "end-of-day"]
     total_pnl = sum(t["pnl_amount"] for t in trades)
+    winners = [t for t in trades if t["pnl_amount"] > 0]
 
     print("\n=== Backtest Summary ===")
-    print(f"Trades: {len(trades)}  (target hit: {len(wins)}, trailing-stop: {len(losses)}, end-of-day: {len(flat)})")
+    print(f"Trades: {len(trades)}  (trailing-stop: {len(stopped)}, end-of-day: {len(flat)})")
     if trades:
-        win_rate = len(wins) / len(trades) * 100
+        win_rate = len(winners) / len(trades) * 100
         avg_return = sum(t["pnl_pct"] for t in trades) / len(trades)
-        print(f"Win rate (target hit): {win_rate:.1f}%")
+        print(f"Win rate (closed above entry): {win_rate:.1f}%")
         print(f"Average return per trade: {avg_return:.2f}%")
     print(f"Total P&L: Rs {total_pnl:,.2f}")
     print(f"Starting capital: Rs {config.STARTING_CAPITAL_INR:,.2f}")
@@ -269,10 +249,24 @@ def report(trades, cash):
     print(f"Return on starting capital: {(cash / config.STARTING_CAPITAL_INR - 1) * 100:.2f}%")
 
     if trades:
+        print(f"\n{'Ticker':<14}{'Entry (IST)':>20}{'Price':>10}{'Exit (IST)':>20}{'Price':>10}  {'Reason':<14}{'PnL%':>7}")
+        for t in trades:
+            entry_ist = t["entry_time"].astimezone(storage.IST)
+            exit_ist = t["exit_time"].astimezone(storage.IST)
+            print(
+                f"{t['ticker']:<14}{entry_ist.strftime('%m-%d %H:%M'):>20}{t['entry_price']:>10}"
+                f"{exit_ist.strftime('%m-%d %H:%M'):>20}{t['exit_price']:>10}  "
+                f"{t['reason']:<14}{t['pnl_pct']:>6}%"
+            )
+        csv_rows = [
+            {**t, "entry_time": t["entry_time"].astimezone(storage.IST).isoformat(),
+             "exit_time": t["exit_time"].astimezone(storage.IST).isoformat()}
+            for t in trades
+        ]
         with open(config.BACKTEST_TRADES_CSV_PATH, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(trades[0].keys()))
+            writer = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()))
             writer.writeheader()
-            writer.writerows(trades)
+            writer.writerows(csv_rows)
         print(f"\nTrade detail written to {config.BACKTEST_TRADES_CSV_PATH}")
 
 
@@ -280,13 +274,11 @@ async def main():
     client = TelegramClient(config.TELEGRAM_SESSION_NAME, config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH)
     await client.start()
 
-    log.info("Fetching PEAD cards from the last %d days...", config.BACKTEST_LOOKBACK_DAYS)
-    signals = await fetch_signals(client)
-    log.info("Found %d historical cards", len(signals))
+    lookback_days = config.INTRADAY_BACKTEST_LOOKBACK_DAYS
+    log.info("Fetching '%s' ratings from the last %d days...", config.BUY_RATING_LABEL, lookback_days)
+    ratings = await fetch_excellent_ratings(client, lookback_days)
 
-    excellent_signals = await fetch_excellent_signals(client)
-
-    trades, cash = simulate(signals, excellent_signals)
+    trades, cash = simulate_intraday(ratings, lookback_days)
     report(trades, cash)
 
     await client.disconnect()
