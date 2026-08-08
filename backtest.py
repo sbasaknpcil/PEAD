@@ -134,11 +134,14 @@ def _resolve_intraday_trade(signal_time, intraday_history):
 def simulate_intraday(ratings, lookback_days):
     """Buy every rating immediately during market hours, no PEAD/200DMA/RSI/mcap
     filter, exit on a 2% trailing stop or forced end-of-day close — mirrors the live
-    single-trigger strategy exactly, using 5m bars so 'immediately' is precise."""
+    single-trigger strategy exactly, using 1m bars so 'immediately' is precise."""
     cash = config.STARTING_CAPITAL_INR
     histories = {}
     today = datetime.now(timezone.utc)
-    fetch_start = today - timedelta(days=lookback_days + 1)
+    # Yahoo hard-caps 1m history at 8 days per request; the end boundary already
+    # reaches 1 day past "today", so the start side gets at most 6 days back to
+    # keep the total span safely under that cap regardless of lookback_days.
+    fetch_start = today - timedelta(days=min(lookback_days, 6))
 
     candidates = []
     for rating in ratings:
@@ -153,7 +156,11 @@ def simulate_intraday(ratings, lookback_days):
         ticker = price_feed.resolve_symbol(rating["ticker"]) or f"{rating['ticker']}.NS"
         if ticker not in histories:
             try:
-                history = price_feed.get_intraday_history(ticker, fetch_start, today + timedelta(days=1))
+                # 1m is the finest granularity Yahoo provides for NSE intraday data
+                # (and only for a trailing ~7-day window) - using it instead of 5m
+                # caps the entry-timing approximation at under a minute instead of up
+                # to five, since "immediately" is otherwise rounded up to the next bar.
+                history = price_feed.get_intraday_history(ticker, fetch_start, today + timedelta(days=1), interval="1m")
             except Exception:
                 log.warning("Could not fetch intraday history for %s", ticker)
                 history = None
@@ -169,7 +176,7 @@ def simulate_intraday(ratings, lookback_days):
             log.info("%s (%s IST): no intraday bars at/after signal time, skipping", ticker, signal_ist)
             continue
 
-        candidates.append({"ticker": ticker, **trade})
+        candidates.append({"ticker": ticker, "signal_time": rating["date"], **trade})
 
     # Chronological event simulation so overlapping positions correctly compete for
     # cash and MAX_OPEN_POSITIONS slots, same as the live bot would encounter them.
@@ -215,6 +222,7 @@ def simulate_intraday(ratings, lookback_days):
             trades.append(
                 {
                     "ticker": c["ticker"],
+                    "signal_time": c["signal_time"],
                     "entry_time": c["entry_time"],
                     "entry_price": round(c["entry_price"], 2),
                     "exit_time": c["exit_time"],
@@ -249,17 +257,25 @@ def report(trades, cash):
     print(f"Return on starting capital: {(cash / config.STARTING_CAPITAL_INR - 1) * 100:.2f}%")
 
     if trades:
-        print(f"\n{'Ticker':<14}{'Entry (IST)':>20}{'Price':>10}{'Exit (IST)':>20}{'Price':>10}  {'Reason':<14}{'PnL%':>7}")
+        print(
+            f"\n{'Ticker':<14}{'Signal (IST)':>18}{'Entry (IST)':>18}{'Lag':>7}"
+            f"{'Exit (IST)':>18}  {'Reason':<14}{'PnL%':>7}"
+        )
         for t in trades:
+            signal_ist = t["signal_time"].astimezone(storage.IST)
             entry_ist = t["entry_time"].astimezone(storage.IST)
             exit_ist = t["exit_time"].astimezone(storage.IST)
+            lag_seconds = (entry_ist - signal_ist).total_seconds()
+            lag_str = f"{lag_seconds/60:.1f}m" if lag_seconds >= 60 else f"{lag_seconds:.0f}s"
             print(
-                f"{t['ticker']:<14}{entry_ist.strftime('%m-%d %H:%M'):>20}{t['entry_price']:>10}"
-                f"{exit_ist.strftime('%m-%d %H:%M'):>20}{t['exit_price']:>10}  "
+                f"{t['ticker']:<14}{signal_ist.strftime('%m-%d %H:%M:%S'):>18}"
+                f"{entry_ist.strftime('%m-%d %H:%M:%S'):>18}{lag_str:>7}"
+                f"{exit_ist.strftime('%m-%d %H:%M:%S'):>18}  "
                 f"{t['reason']:<14}{t['pnl_pct']:>6}%"
             )
         csv_rows = [
-            {**t, "entry_time": t["entry_time"].astimezone(storage.IST).isoformat(),
+            {**t, "signal_time": t["signal_time"].astimezone(storage.IST).isoformat(),
+             "entry_time": t["entry_time"].astimezone(storage.IST).isoformat(),
              "exit_time": t["exit_time"].astimezone(storage.IST).isoformat()}
             for t in trades
         ]
