@@ -15,7 +15,11 @@ local SQLite database.**
   that contradicts a bullish score). A buy also requires the `earnings_pulse`
   channel to independently rate the same stock "Excellent" the same (IST)
   calendar day — whichever of the two signals arrives second triggers the
-  trade.
+  trade. The trade is only actually placed if that confirmation lands during
+  NSE trading hours (09:15-15:25 IST) — since every position must exit the
+  same day it opens, a signal confirmed after hours would have no real
+  trading window and is skipped entirely rather than bought and immediately
+  force-closed near the same price.
 - **Ticker resolution**: cards that show an NSE ticker use it directly. Cards
   that only show a BSE code fall back to resolving the company name to a
   tradeable Yahoo Finance symbol (NSE preferred, BSE otherwise) — many

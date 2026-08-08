@@ -10,7 +10,22 @@ import storage
 log = logging.getLogger("portfolio")
 
 
+def _within_market_hours(now_ist):
+    open_minutes = config.MARKET_OPEN_IST_HOUR * 60 + config.MARKET_OPEN_IST_MINUTE
+    close_minutes = config.MARKET_CLOSE_IST_HOUR * 60 + config.MARKET_CLOSE_IST_MINUTE
+    now_minutes = now_ist.hour * 60 + now_ist.minute
+    return open_minutes <= now_minutes < close_minutes
+
+
 def buy(ticker, pead_score):
+    now_ist = datetime.now(timezone.utc).astimezone(storage.IST)
+    if not _within_market_hours(now_ist):
+        log.info(
+            "Skipping %s: signal confirmed outside market hours (%s IST) - no same-day window left",
+            ticker, now_ist.strftime("%H:%M"),
+        )
+        return False
+
     if storage.get_position(ticker):
         log.info("Skipping %s: position already open", ticker)
         return False

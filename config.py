@@ -45,6 +45,12 @@ TRAILING_STOP_PCT = _float("TRAILING_STOP_PCT", 0.02)
 MARKET_CLOSE_IST_HOUR = _int("MARKET_CLOSE_IST_HOUR", 15)
 MARKET_CLOSE_IST_MINUTE = _int("MARKET_CLOSE_IST_MINUTE", 25)
 
+# A signal confirmed outside NSE trading hours gets no real intraday window under the
+# same-day-only rule (it would just buy and immediately force-close near the same
+# price) - so buys are only taken between market open and MARKET_CLOSE_IST_HOUR:MINUTE.
+MARKET_OPEN_IST_HOUR = _int("MARKET_OPEN_IST_HOUR", 9)
+MARKET_OPEN_IST_MINUTE = _int("MARKET_OPEN_IST_MINUTE", 15)
+
 REQUIRE_ABOVE_200DMA = os.environ.get("REQUIRE_ABOVE_200DMA", "true").lower() != "false"
 MIN_MARKET_CAP_CR = _float("MIN_MARKET_CAP_CR", 2000)
 RSI_PERIOD = _int("RSI_PERIOD", 14)
