@@ -55,7 +55,50 @@ def _parse_number(text):
         return None
 
 
-def _number_below_label(words, label_text, max_y_gap=150, max_x_gap=150):
+def _verified_number(image, word, pad=15):
+    """The full-page sparse-text pass (--psm 11) occasionally misreads a digit in
+    isolation (observed: a card's "53.3" PEAD score read back as "93.3", a "5"/"9"
+    confusion) even though it locates the right word. A second, targeted OCR pass
+    cropped to just that word's box with a digit-only whitelist reliably gets it
+    right, so it's used to double-check/override numbers the buy decision depends on."""
+    box = (
+        max(word["x"] - pad, 0),
+        max(word["y"] - pad, 0),
+        word["x"] + word["w"] + pad,
+        word["y"] + word["h"] + pad,
+    )
+    crop = image.crop(box)
+    reocr_text = pytesseract.image_to_string(
+        crop, config="--psm 7 -c tessedit_char_whitelist=0123456789.,-%"
+    ).strip()
+    reocr_value = _parse_number(reocr_text)
+    original_value = _parse_number(word["text"])
+    if reocr_value is None:
+        return original_value
+    # The crop's edge can clip a trailing digit ("5.59" -> "5.5"), which still parses
+    # cleanly but silently drops information rather than fixing a misread — only trust
+    # a re-check that read the same number of digits as the original.
+    original_digits = sum(c.isdigit() for c in word["text"])
+    reocr_digits = sum(c.isdigit() for c in reocr_text)
+    if reocr_digits != original_digits:
+        return original_value
+    # A crop can also pick up stray marks (an adjacent comma, a border pixel) that the
+    # digit-only whitelist turns into a bogus digit — trust the re-check only when it's
+    # plausibly the same number (a single misread digit), not a different one entirely.
+    same_magnitude = original_value is None or abs(reocr_value) < 1e-9 or abs(original_value) < 1e-9 or (
+        0.3 < abs(reocr_value / original_value) < 3
+    )
+    if not same_magnitude:
+        return original_value
+    if reocr_value != original_value:
+        log.warning(
+            "Sparse-pass OCR read %r but targeted re-check read %r for the same word; using the re-check",
+            word["text"], reocr_text,
+        )
+    return reocr_value
+
+
+def _number_below_label(image, words, label_text, max_y_gap=150, max_x_gap=150):
     label = next((w for w in words if w["text"].lower() == label_text.lower()), None)
     if label is None:
         return None
@@ -73,7 +116,7 @@ def _number_below_label(words, label_text, max_y_gap=150, max_x_gap=150):
     # stat boxes (e.g. PEAD SCORE / FWD PE) can sit at nearly the same y, and
     # x-proximity is what actually identifies which box a number belongs to.
     closest = min(candidates, key=lambda w: abs(_center_x(w) - _center_x(label)))
-    return _parse_number(closest["text"])
+    return _verified_number(image, closest)
 
 
 def _find_ticker(words):
@@ -154,7 +197,7 @@ def extract_card(image_path):
     image = Image.open(image_path)
     words = _words(image)
 
-    pead_score = _number_below_label(words, "SCORE")
+    pead_score = _number_below_label(image, words, "SCORE")
     if pead_score is not None and not (PEAD_SCORE_MIN <= pead_score <= PEAD_SCORE_MAX):
         log.warning("Implausible PEAD score %s for %s, discarding as a likely OCR misread", pead_score, image_path)
         pead_score = None
@@ -164,7 +207,7 @@ def extract_card(image_path):
         "nse_ticker": _find_ticker(words),
         "quarter": _find_quarter(words),
         "pead_score": pead_score,
-        "fwd_pe": _number_below_label(words, "PE"),
+        "fwd_pe": _number_below_label(image, words, "PE"),
         "market_cap_cr": _find_market_cap_cr(words),
         "financials": _extract_financials(words),
         "last_price": None,
