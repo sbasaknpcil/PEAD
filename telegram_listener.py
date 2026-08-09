@@ -43,7 +43,7 @@ async def _handle_card(client, message):
         return
 
     image_path = await client.download_media(message, file=str(config.IMAGE_CACHE_DIR) + "/")
-    log.info("Downloaded PEAD card: %s", image_path)
+    log.debug("Downloaded PEAD card: %s", image_path)
 
     try:
         card = vision_parser.extract_card(image_path)
@@ -51,7 +51,10 @@ async def _handle_card(client, message):
         log.exception("Failed to parse card %s", image_path)
         return
 
-    log.info(
+    # DEBUG, not INFO: this never triggers a trade (see module docstring above), so
+    # it's kept out of the default log to avoid reading as buy activity next to real
+    # earnings_pulse-driven BUY/SELL lines.
+    log.debug(
         "PEAD card (informational only): %s, score=%s",
         card.get("nse_ticker") or card.get("company_name"), card.get("pead_score"),
     )
