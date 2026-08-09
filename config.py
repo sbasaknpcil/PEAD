@@ -47,7 +47,7 @@ RSI_MIN = _float("RSI_MIN", 50)
 # seen since entry, or a forced close near market end, whichever comes first.
 TRAILING_STOP_PCT = _float("TRAILING_STOP_PCT", 0.02)
 MARKET_CLOSE_IST_HOUR = _int("MARKET_CLOSE_IST_HOUR", 15)
-MARKET_CLOSE_IST_MINUTE = _int("MARKET_CLOSE_IST_MINUTE", 30)
+MARKET_CLOSE_IST_MINUTE = _int("MARKET_CLOSE_IST_MINUTE", 0)
 
 # Buys (and the "immediately" in "buy immediately") only happen inside this window.
 MARKET_OPEN_IST_HOUR = _int("MARKET_OPEN_IST_HOUR", 9)

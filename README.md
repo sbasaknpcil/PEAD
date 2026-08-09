@@ -12,7 +12,7 @@ local SQLite database.**
 - **Buy**: any stock the `earnings_pulse` Telegram channel rates "Excellent"
   gets bought immediately — no PEAD score, 200DMA, RSI, or market-cap check.
   The buy only actually places if the rating lands during NSE trading hours
-  (09:15-15:30 IST) — since every position must exit the same day it opens, a
+  (09:15-15:00 IST) — since every position must exit the same day it opens, a
   rating outside that window has no real trading window and is skipped
   entirely rather than bought and immediately force-closed near the same
   price. PEAD cards from the "PEAD" topic are still downloaded and logged for
@@ -24,7 +24,7 @@ local SQLite database.**
 - **Exit — intraday only, every position closes the same day it opens, no
   upper target**, checked every 5 minutes: a stop-loss that trails 2% below
   the highest price seen since entry (so it only ever ratchets up, never
-  down); otherwise a forced close near market close (15:30 IST) if it hasn't
+  down); otherwise a forced close near market close (15:00 IST) if it hasn't
   triggered yet.
 
 ## Setup
@@ -50,10 +50,10 @@ unattended for extended periods.
 ## Other scripts
 
 - `python backtest.py` — walks historical `earnings_pulse` "Excellent" ratings
-  through the same immediate-buy/trailing-stop rules using 5-minute intraday
-  bars (last `INTRADAY_BACKTEST_LOOKBACK_DAYS`, default 7 — Yahoo only keeps
-  ~60 days of 5m history), with realistic capital constraints, reports win
-  rate/return, writes `backtest_trades.csv`.
+  through the same immediate-buy/trailing-stop rules using 1-minute intraday
+  bars (last `INTRADAY_BACKTEST_LOOKBACK_DAYS`, default 7 — Yahoo caps 1m
+  history at ~8 days, falling back to 5m for longer windows), with realistic
+  capital constraints, reports win rate/return, writes `backtest_trades.csv`.
 - `python list_signals.py` — lists historical cards above the score
   threshold. Override lookback window per-run, e.g.
   `BACKTEST_LOOKBACK_DAYS=7 python list_signals.py`.
