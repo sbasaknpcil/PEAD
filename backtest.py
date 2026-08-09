@@ -107,7 +107,10 @@ def _resolve_trade(signal_time, intraday_history, stop_pct, target_pct):
     day. Entry is the first bar at/after the signal time (approximating an immediate
     market order); exit is target_pct above entry if hit first, else a trailing stop
     stop_pct below the peak High seen since entry, else the day's last bar close.
-    target_pct=None means no upper target (the live default)."""
+    target_pct=None means no upper target (the live default). Also reports peak_pct
+    - the highest intraday gain actually reached above entry, independent of which
+    exit fired - so it's possible to tell whether a given target level ever had a
+    chance to trigger versus simply never being reached by any trade."""
     day = intraday_history[intraday_history.index.date == signal_time.date()]
     day = day[day.index >= signal_time]
     if day.empty:
@@ -119,22 +122,26 @@ def _resolve_trade(signal_time, intraday_history, stop_pct, target_pct):
 
     peak = entry_price
     for ts, row in day.iloc[1:].iterrows():
+        peak = max(peak, float(row["High"]))
+        peak_pct = round((peak / entry_price - 1) * 100, 2)
         if target_price is not None and row["High"] >= target_price:
             return {
                 "entry_time": entry_time, "entry_price": entry_price,
                 "exit_time": ts, "exit_price": target_price, "reason": "target",
+                "peak_pct": peak_pct,
             }
-        peak = max(peak, float(row["High"]))
         trailing_stop = peak * (1 - stop_pct)
         if row["Low"] <= trailing_stop:
             return {
                 "entry_time": entry_time, "entry_price": entry_price,
                 "exit_time": ts, "exit_price": trailing_stop, "reason": "trailing-stop",
+                "peak_pct": peak_pct,
             }
 
     return {
         "entry_time": entry_time, "entry_price": entry_price,
         "exit_time": day.index[-1], "exit_price": float(day.iloc[-1]["Close"]), "reason": "end-of-day",
+        "peak_pct": round((peak / entry_price - 1) * 100, 2),
     }
 
 
@@ -244,6 +251,7 @@ def simulate_candidates(candidates, stop_pct, target_pct):
                     "reason": c["reason"],
                     "pnl_pct": round(pnl_pct, 2),
                     "pnl_amount": round(pnl, 2),
+                    "peak_pct": c["peak_pct"],
                 }
             )
 
@@ -309,9 +317,18 @@ def report(trades, cash):
     print(f"Return on starting capital: {(cash / config.STARTING_CAPITAL_INR - 1) * 100:.2f}%")
 
     if trades:
+        peaks = [t["peak_pct"] for t in trades]
+        print(
+            f"\nPeak intraday gain reached (independent of exit reason): "
+            f"max {max(peaks):.2f}%, median {sorted(peaks)[len(peaks)//2]:.2f}%"
+        )
+        for threshold in (5, 7, 10, 15):
+            n = sum(1 for p in peaks if p >= threshold)
+            print(f"  Trades that ever reached >={threshold}%: {n}/{len(trades)}")
+
         print(
             f"\n{'Ticker':<14}{'Signal (IST)':>18}{'Entry (IST)':>18}{'Lag':>7}"
-            f"{'Exit (IST)':>18}  {'Reason':<14}{'PnL%':>7}"
+            f"{'Exit (IST)':>18}  {'Reason':<14}{'PnL%':>7}{'Peak%':>7}"
         )
         for t in trades:
             signal_ist = t["signal_time"].astimezone(storage.IST)
@@ -323,7 +340,7 @@ def report(trades, cash):
                 f"{t['ticker']:<14}{signal_ist.strftime('%m-%d %H:%M:%S'):>18}"
                 f"{entry_ist.strftime('%m-%d %H:%M:%S'):>18}{lag_str:>7}"
                 f"{exit_ist.strftime('%m-%d %H:%M:%S'):>18}  "
-                f"{t['reason']:<14}{t['pnl_pct']:>6}%"
+                f"{t['reason']:<14}{t['pnl_pct']:>6}%{t['peak_pct']:>6}%"
             )
         csv_rows = [
             {**t, "signal_time": t["signal_time"].astimezone(storage.IST).isoformat(),
@@ -357,10 +374,12 @@ def report_regression(grid, top_n=15):
 
 
 async def main():
+    import sys
+
     client = TelegramClient(config.TELEGRAM_SESSION_NAME, config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH)
     await client.start()
 
-    lookback_days = config.INTRADAY_BACKTEST_LOOKBACK_DAYS
+    lookback_days = int(sys.argv[1]) if len(sys.argv) > 1 else config.INTRADAY_BACKTEST_LOOKBACK_DAYS
     log.info("Fetching '%s' ratings from the last %d days...", config.BUY_RATING_LABEL, lookback_days)
     ratings = await fetch_excellent_ratings(client, lookback_days)
 
