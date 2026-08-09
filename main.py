@@ -16,7 +16,7 @@ log = logging.getLogger("main")
 async def position_check_loop():
     while True:
         try:
-            portfolio.check_exits()
+            portfolio.check_exits_all_variants()
         except Exception:
             log.exception("Error while checking open positions for exits")
         await asyncio.sleep(config.POSITION_CHECK_INTERVAL_SECONDS)
@@ -34,6 +34,7 @@ async def run_client():
         retry_delay=15,
     )
     await client.start()
+    portfolio.set_notify_client(client)
 
     group_entity = await telegram_listener.resolve_group(client)
     telegram_listener.register(client, group_entity)
@@ -41,13 +42,16 @@ async def run_client():
     confirmation_entity = await earnings_pulse_listener.resolve_channel(client)
     earnings_pulse_listener.register(client, confirmation_entity)
 
+    variant_summary = ", ".join(
+        f"{v['label']}=₹{storage.get_cash(v['variant']):,.2f}" for v in config.STRATEGY_VARIANTS
+    )
     log.info(
         "Buying every '%s' rating from '%s' during market hours (%02d:%02d-%02d:%02d IST); "
-        "PEAD topic %s of group %s logged for reference only (paper trading, cash=%.2f)",
+        "PEAD topic %s of group %s logged for reference only (paper trading; %s)",
         config.BUY_RATING_LABEL, config.CONFIRMATION_CHANNEL,
         config.MARKET_OPEN_IST_HOUR, config.MARKET_OPEN_IST_MINUTE,
         config.MARKET_CLOSE_IST_HOUR, config.MARKET_CLOSE_IST_MINUTE,
-        config.TELEGRAM_PEAD_TOPIC_ID, config.TELEGRAM_GROUP_ID, storage.get_cash(),
+        config.TELEGRAM_PEAD_TOPIC_ID, config.TELEGRAM_GROUP_ID, variant_summary,
     )
 
     await client.run_until_disconnected()

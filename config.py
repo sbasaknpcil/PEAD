@@ -43,9 +43,18 @@ RSI_PERIOD = _int("RSI_PERIOD", 14)
 RSI_MIN = _float("RSI_MIN", 50)
 
 # Exit strategy: intraday only, position always closes same day as entry, no upper
-# target — ride it until a stop trailing TRAILING_STOP_PCT below the highest price
-# seen since entry, or a forced close near market end, whichever comes first.
+# target — ride it until a trailing stop below the highest price seen since entry,
+# or a forced close near market end, whichever comes first. TRAILING_STOP_PCT is
+# kept as the single-variant default for backtest.py/independent_pead_analysis.py;
+# the live bot instead runs every variant in STRATEGY_VARIANTS in parallel, each as
+# its own fully independent paper portfolio (own cash, own positions, own trades),
+# triggered by the same signals, so the stop-loss % choice can be compared live
+# rather than only in backtest.
 TRAILING_STOP_PCT = _float("TRAILING_STOP_PCT", 0.02)
+STRATEGY_VARIANTS = [
+    {"variant": "sl_2pct", "label": "SL 2%", "trailing_stop_pct": 0.02},
+    {"variant": "sl_1pct", "label": "SL 1%", "trailing_stop_pct": 0.01},
+]
 MARKET_CLOSE_IST_HOUR = _int("MARKET_CLOSE_IST_HOUR", 15)
 MARKET_CLOSE_IST_MINUTE = _int("MARKET_CLOSE_IST_MINUTE", 0)
 
