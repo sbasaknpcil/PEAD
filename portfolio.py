@@ -37,8 +37,8 @@ def _within_market_hours(now_ist):
 
 
 def buy(variant, label, trailing_stop_pct, ticker):
-    """Buy immediately on an earnings_pulse BUY_RATING_LABEL rating alone - no PEAD
-    score, 200DMA, RSI, or market-cap check. Every position exits the same day it
+    """Buy immediately on an earnings_pulse rating alone - no PEAD score, 200DMA,
+    RSI, or market-cap check. Every position exits the same day it
     opens (see check_exits), so a rating outside market hours has no trading window
     left and is skipped rather than bought. Each variant is a fully independent
     paper portfolio - its own cash, its own positions - so the same signal can open
@@ -77,7 +77,7 @@ def buy(variant, label, trailing_stop_pct, ticker):
     storage.open_position(variant, ticker, quantity, price)
     storage.set_cash(variant, cash - cost)
     storage.record_trade(
-        variant, ticker, "BUY", quantity, price, f"{config.CONFIRMATION_CHANNEL}={config.BUY_RATING_LABEL}"
+        variant, ticker, "BUY", quantity, price, f"{config.CONFIRMATION_CHANNEL}={label}"
     )
 
     log.info(
@@ -95,6 +95,18 @@ def buy_all_variants(ticker):
     """Fan the same signal out to every configured portfolio variant."""
     for v in config.STRATEGY_VARIANTS:
         buy(v["variant"], v["label"], v["trailing_stop_pct"], ticker)
+
+
+def buy_for_tier(ticker, rating):
+    """Buys into the one variant whose configured rating matches, e.g. an
+    earnings_pulse "Great" message only opens a position in the "great"
+    portfolio — Excellent/Great/Good stay fully separate books so their
+    performance is directly comparable. No match (a rating not configured as
+    a variant, e.g. "Weak"/"OK") is a silent no-op."""
+    for v in config.STRATEGY_VARIANTS:
+        if v.get("rating", "").lower() == rating.lower():
+            buy(v["variant"], v["label"], v["trailing_stop_pct"], ticker)
+            return
 
 
 def _sell(variant, label, position, price, reason):

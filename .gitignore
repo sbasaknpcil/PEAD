@@ -4,7 +4,10 @@ venv/
 *.session-journal
 pead_bot.db
 downloaded_cards/
+concall_transcripts/
 __pycache__/
 *.pyc
 backtest_signal_cache.json
 backtest_trades.csv
+independent_pead_results.json
+posted_nse_results.json

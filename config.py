@@ -45,15 +45,19 @@ RSI_MIN = _float("RSI_MIN", 50)
 # Exit strategy: intraday only, position always closes same day as entry, no upper
 # target — ride it until a trailing stop below the highest price seen since entry,
 # or a forced close near market end, whichever comes first. TRAILING_STOP_PCT is
-# kept as the single-variant default for backtest.py/independent_pead_analysis.py;
-# the live bot instead runs every variant in STRATEGY_VARIANTS in parallel, each as
-# its own fully independent paper portfolio (own cash, own positions, own trades),
-# triggered by the same signals, so the stop-loss % choice can be compared live
-# rather than only in backtest.
+# kept as the single-variant default for backtest.py/independent_pead_analysis.py.
 TRAILING_STOP_PCT = _float("TRAILING_STOP_PCT", 0.02)
+
+# The live bot runs one fully independent paper portfolio per earnings_pulse rating
+# tier (own cash, own positions, own trades) so performance can be compared tier vs
+# tier under an identical exit strategy — a signal only ever buys into the ONE
+# variant matching its own rating (portfolio.buy_for_tier), unlike the old
+# buy_all_variants fan-out this replaced (that compared trailing-stop %, not tiers;
+# see git history if reviving that comparison is ever wanted).
 STRATEGY_VARIANTS = [
-    {"variant": "sl_2pct", "label": "SL 2%", "trailing_stop_pct": 0.02},
-    {"variant": "sl_1pct", "label": "SL 1%", "trailing_stop_pct": 0.01},
+    {"variant": "excellent", "label": "Excellent", "rating": "Excellent", "trailing_stop_pct": 0.02},
+    {"variant": "great", "label": "Great", "rating": "Great", "trailing_stop_pct": 0.02},
+    {"variant": "good", "label": "Good", "rating": "Good", "trailing_stop_pct": 0.02},
 ]
 MARKET_CLOSE_IST_HOUR = _int("MARKET_CLOSE_IST_HOUR", 15)
 MARKET_CLOSE_IST_MINUTE = _int("MARKET_CLOSE_IST_MINUTE", 0)

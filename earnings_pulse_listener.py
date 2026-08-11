@@ -37,8 +37,9 @@ async def _handle_message(message):
     ticker, rating = parsed
 
     log.info("%s: %s", ticker, rating)
-    if rating.lower() == config.BUY_RATING_LABEL.lower():
-        portfolio.buy_all_variants(ticker)
+    configured_ratings = {v["rating"].lower() for v in config.STRATEGY_VARIANTS}
+    if rating.lower() in configured_ratings:
+        portfolio.buy_for_tier(ticker, rating)
 
 
 def register(client, channel_entity):

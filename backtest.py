@@ -262,7 +262,7 @@ def simulate_candidates(candidates, stop_pct, target_pct):
 def simulate_intraday(ratings, lookback_days):
     """Convenience wrapper: fetch candidates and simulate at the live default
     (config.TRAILING_STOP_PCT, no target). Kept for existing callers (e.g.
-    market_correlation.py) that don't need the regression sweep below."""
+    pead_market_correlation.py) that don't need the regression sweep below."""
     candidates = fetch_candidates(ratings, lookback_days)
     return simulate_candidates(candidates, config.TRAILING_STOP_PCT, None)
 

@@ -45,10 +45,12 @@ async def run_client():
     variant_summary = ", ".join(
         f"{v['label']}=₹{storage.get_cash(v['variant']):,.2f}" for v in config.STRATEGY_VARIANTS
     )
+    tier_ratings = ", ".join(v["rating"] for v in config.STRATEGY_VARIANTS)
     log.info(
-        "Buying every '%s' rating from '%s' during market hours (%02d:%02d-%02d:%02d IST); "
-        "PEAD topic %s of group %s logged for reference only (paper trading; %s)",
-        config.BUY_RATING_LABEL, config.CONFIRMATION_CHANNEL,
+        "Buying each of '%s' from '%s' into its own tier portfolio during market hours "
+        "(%02d:%02d-%02d:%02d IST); PEAD topic %s of group %s logged for reference only "
+        "(paper trading; %s)",
+        tier_ratings, config.CONFIRMATION_CHANNEL,
         config.MARKET_OPEN_IST_HOUR, config.MARKET_OPEN_IST_MINUTE,
         config.MARKET_CLOSE_IST_HOUR, config.MARKET_CLOSE_IST_MINUTE,
         config.TELEGRAM_PEAD_TOPIC_ID, config.TELEGRAM_GROUP_ID, variant_summary,

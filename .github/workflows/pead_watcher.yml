@@ -1,0 +1,53 @@
+name: PEAD tier watcher
+
+# Two schedules: poll every 5 min (GitHub Actions' practical floor - schedules
+# are "best effort" and can slip further under load, this is not a real-time
+# guarantee) through NSE market hours + a buffer (08:30-15:29 IST =
+# 03:00-09:59 UTC), then post the tier comparison once ~15 min after close.
+# workflow_dispatch lets you trigger a run manually from the Actions tab to
+# test without waiting for the schedule.
+on:
+  schedule:
+    - cron: '*/5 3-9 * * 1-5'   # every 5 min, 03:00-09:59 UTC, Mon-Fri
+    - cron: '55 9 * * 1-5'      # 09:55 UTC (~15:25 IST), daily tier summary
+  workflow_dispatch: {}
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore Telegram session
+        run: echo "${{ secrets.TELEGRAM_SESSION_B64 }}" | base64 -d > telegram_session.session
+
+      - name: Run watcher (buy/exit check)
+        if: github.event.schedule != '55 9 * * 1-5'
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: python pead_github_watcher.py
+
+      - name: Post daily tier summary
+        if: github.event.schedule == '55 9 * * 1-5'
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: python pead_portfolio_summary.py
+
+      - name: Commit updated portfolio state
+        run: |
+          git config user.name "pead-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -f pead_bot.db
+          git diff --cached --quiet || git commit -m "Update portfolio state [skip ci]"
+          git push

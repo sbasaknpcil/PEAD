@@ -5,3 +5,6 @@ multitasking==0.0.11  # yfinance dep; newer versions use `type[X]` syntax that n
 protobuf>=4.25  # yfinance's live-pricing module imports this directly
 pytesseract>=0.3.10
 pillow>=10.0
+requests>=2.31
+beautifulsoup4>=4.12
+pypdf>=4.0
