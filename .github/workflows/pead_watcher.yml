@@ -28,7 +28,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Restore Telegram session
-        run: echo "${{ secrets.TELEGRAM_SESSION_B64 }}" | base64 -d > telegram_session.session
+        run: echo "${{ secrets.TELEGRAM_SESSION_B64 }}" | base64 -d | gunzip > telegram_session.session
 
       - name: Run watcher (buy/exit check)
         if: github.event.schedule != '55 9 * * 1-5'
