@@ -61,7 +61,15 @@ def buy(variant, label, trailing_stop_pct, ticker):
         return False
 
     cash = storage.get_cash(variant)
-    price = price_feed.get_last_price(ticker)
+    try:
+        price = price_feed.get_last_price(ticker)
+    except Exception:
+        # yfinance's response occasionally omits a key (e.g. KeyError:
+        # 'currentTradingPeriod') on a transient/malformed API response - this
+        # used to crash the whole watcher run, silently failing every other
+        # tier/ticker in the same cycle too. Skip just this one buy instead.
+        log.exception("[%s] Could not fetch price for %s, skipping this buy", variant, ticker)
+        return False
 
     allocation = min(cash, config.MAX_POSITION_VALUE_INR)
     quantity = math.floor(allocation / price)

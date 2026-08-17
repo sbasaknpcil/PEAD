@@ -41,7 +41,12 @@ async def poll_once():
     for message in reversed(messages):
         if not storage.is_message_processed(message.chat_id, message.id):
             new_count += 1
-        await earnings_pulse_listener._handle_message(message)
+        try:
+            await earnings_pulse_listener._handle_message(message)
+        except Exception:
+            # One bad message (unexpected format, a transient API error inside
+            # a buy) shouldn't take the rest of this run's messages down with it.
+            log.exception("Error handling message %s, continuing with the rest", message.id)
 
     log.info("Scanned %d recent messages, %d were new", len(messages), new_count)
 
