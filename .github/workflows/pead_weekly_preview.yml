@@ -1,0 +1,32 @@
+name: PEAD weekly results preview
+
+# Every Sunday 08:00 IST (02:30 UTC): screens the coming Mon-Fri's NSE results
+# calendar and posts the strongest fundamentally-backed candidates to
+# Telegram. Separate workflow from the intraday tier watcher - different
+# schedule, different purpose, no portfolio state to commit back.
+on:
+  schedule:
+    - cron: '30 2 * * 0'
+  workflow_dispatch: {}
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore Telegram session
+        run: echo "${{ secrets.TELEGRAM_SESSION_B64 }}" | base64 -d | gunzip > telegram_session.session
+
+      - name: Run weekly preview
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: python pead_weekly_preview.py
