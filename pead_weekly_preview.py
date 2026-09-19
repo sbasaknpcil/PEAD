@@ -14,6 +14,7 @@ Telegram post says so plainly instead of picking weak names anyway.
 """
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -66,12 +67,29 @@ def fetch_week_results_calendar(monday, friday):
     return [{"symbol": s, "name": n} for s, n in seen.items()]
 
 
-def fetch_screener_page(symbol):
-    for variant in ("consolidated", ""):
-        url = f"https://www.screener.in/company/{symbol}/{variant + '/' if variant else ''}"
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
-        if resp.status_code == 200 and "Quarterly Results" in resp.text:
-            return BeautifulSoup(resp.text, "html.parser")
+def fetch_screener_page(symbol, retries=3, retry_wait_seconds=3):
+    """Screener.in is intermittently flaky under repeated hits (connection
+    resets, transient errors) - confirmed by hand: a company that failed once
+    succeeded on an immediate retry with no code change. A single failed
+    attempt must not be reported as "this company has no data" in a weekly
+    post that only gets one shot to be right."""
+    last_error = None
+    for attempt in range(retries):
+        for variant in ("consolidated", ""):
+            url = f"https://www.screener.in/company/{symbol}/{variant + '/' if variant else ''}"
+            try:
+                resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
+            except requests.RequestException as e:
+                last_error = e
+                continue
+            if resp.status_code == 200 and "Quarterly Results" in resp.text:
+                return BeautifulSoup(resp.text, "html.parser")
+            if resp.status_code == 200 and "No data" not in resp.text:
+                last_error = f"HTTP 200 but no Quarterly Results section ({url})"
+        if attempt < retries - 1:
+            log.warning("Screener fetch for %s failed (attempt %d/%d, %s), retrying...", symbol, attempt + 1, retries, last_error)
+            time.sleep(retry_wait_seconds)
+    log.warning("Screener fetch for %s failed after %d attempts: %s", symbol, retries, last_error)
     return None
 
 
