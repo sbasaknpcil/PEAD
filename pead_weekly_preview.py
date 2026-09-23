@@ -1,15 +1,18 @@
-"""Runs every Sunday: finds companies scheduled to declare results in the
-coming Mon-Fri (NSE board-meeting purpose = Financial Results), screens each
-one on fundamentals (Screener.in quarterly trend, same categorical growth
-banding as pead_rate_results.py) and technicals (price_feed RSI/200DMA), and
-posts the strongest few to Telegram with a short story for each.
+"""Runs every day: finds companies scheduled to declare results in a rolling
+LOOKAHEAD_DAYS-day window from today (not a fixed Mon-Fri snap - the NSE
+calendar fills in continuously through the week as companies file board-meeting
+intimations, so a daily rolling check catches newly filed meetings a weekly
+snapshot would miss), screens each one on fundamentals (Screener.in quarterly
+trend, same categorical growth banding as pead_rate_results.py) and technicals
+(price_feed RSI/200DMA), and posts the strongest few to Telegram with a short
+story for each.
 
 Reality check baked into the design, not an afterthought: NSE's current
 results-purpose board-meeting filings skew heavily toward very recently listed
 companies (IPO boom), which by definition have 0-2 quarters of Screener
 history - not enough to judge a trend. Rather than force a score onto thin
 data, candidates are split into "scored" (>=3 quarters + enough price history)
-and "too new to assess" - and if NOTHING clears that bar in a given week, the
+and "too new to assess" - and if NOTHING clears that bar on a given day, the
 Telegram post says so plainly instead of picking weak names anyway.
 """
 import logging
@@ -33,26 +36,28 @@ MIN_QUARTERS_FOR_SCORING = 3
 TOP_N = 5
 
 
-def _next_week_range(today=None):
-    """Given "today" is a Sunday (when this runs), returns (Monday, Friday) of
-    the week that starts tomorrow. Also works sanely if run on another day for
-    manual testing - just uses the next Mon-Fri from today."""
+LOOKAHEAD_DAYS = 7
+
+
+def _lookahead_window(today=None):
+    """Runs daily now (not just Sunday) - the NSE results calendar fills in
+    continuously as companies file board-meeting intimations through the week
+    (confirmed: 3 companies on a Friday check became 5 by Saturday for the
+    same target week), so a rolling window that starts today catches newly
+    filed meetings a fixed weekly snapshot would miss until the next Sunday."""
     today = today or datetime.now(IST).date()
-    days_to_monday = (7 - today.weekday()) % 7 or 7  # next Monday, never today
-    monday = today + timedelta(days=days_to_monday)
-    friday = monday + timedelta(days=4)
-    return monday, friday
+    return today, today + timedelta(days=LOOKAHEAD_DAYS - 1)
 
 
-def fetch_week_results_calendar(monday, friday):
+def fetch_week_results_calendar(start, end):
     """Returns [{symbol, name}] - unique companies with a Financial Results
-    board meeting between monday and friday inclusive."""
+    board meeting between start and end inclusive."""
     session = requests.Session()
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json, text/plain, */*"}
     session.get("https://www.nseindia.com/companies-listing/corporate-filings-board-meetings", headers=headers, timeout=15)
     r = session.get(
         "https://www.nseindia.com/api/corporate-board-meetings"
-        f"?index=equities&from_date={monday.strftime('%d-%m-%Y')}&to_date={friday.strftime('%d-%m-%Y')}",
+        f"?index=equities&from_date={start.strftime('%d-%m-%Y')}&to_date={end.strftime('%d-%m-%Y')}",
         headers={**headers, "Referer": "https://www.nseindia.com/companies-listing/corporate-filings-board-meetings"},
         timeout=15,
     )
@@ -256,20 +261,20 @@ def screen_candidate(symbol, name):
     }
 
 
-def build_message(monday, friday, candidates):
+def build_message(start, end, candidates):
     scored = sorted([c for c in candidates if c["status"] == "scored"], key=lambda c: c["composite"], reverse=True)
     too_new = [c for c in candidates if c["status"] == "too_new"]
     no_data = [c for c in candidates if c["status"] in ("no_screener_page", "insufficient_metrics")]
 
-    lines = [f"WEEKLY RESULTS PREVIEW: {monday.strftime('%d %b')} - {friday.strftime('%d %b %Y')}"]
-    lines.append(f"\n{len(candidates)} companies scheduled to declare results this week.")
+    lines = [f"UPCOMING RESULTS: {start.strftime('%d %b')} - {end.strftime('%d %b %Y')}"]
+    lines.append(f"\n{len(candidates)} companies scheduled to declare results in this window.")
 
     if not scored:
         lines.append(
-            "\nNo candidates cleared the data bar this week (need >=3 quarters of "
-            "history to judge a trend) - this week's results calendar is dominated by "
+            "\nNo candidates cleared the data bar today (need >=3 quarters of "
+            "history to judge a trend) - this window's results calendar is dominated by "
             "very recently listed companies. Nothing confidently strong to flag; "
-            "sitting this week out rather than forcing a pick."
+            "sitting today out rather than forcing a pick."
         )
     else:
         lines.append(f"\nTop {min(TOP_N, len(scored))} by fundamentals + technicals:\n")
@@ -300,9 +305,9 @@ async def post_to_telegram(text):
 def main():
     import asyncio
 
-    monday, friday = _next_week_range()
-    log.info("Fetching results calendar for %s to %s", monday, friday)
-    week_companies = fetch_week_results_calendar(monday, friday)
+    start, end = _lookahead_window()
+    log.info("Fetching results calendar for %s to %s", start, end)
+    week_companies = fetch_week_results_calendar(start, end)
     log.info("%d companies scheduled to declare results", len(week_companies))
 
     candidates = []
@@ -310,7 +315,7 @@ def main():
         log.info("Screening %s (%s)", wc["symbol"], wc["name"])
         candidates.append(screen_candidate(wc["symbol"], wc["name"]))
 
-    message = build_message(monday, friday, candidates)
+    message = build_message(start, end, candidates)
     print(message)
     asyncio.run(post_to_telegram(message))
     log.info("Posted to Telegram")

@@ -1,12 +1,19 @@
-name: PEAD weekly results preview
+name: PEAD upcoming results preview
 
-# Every Sunday 08:00 IST (02:30 UTC): screens the coming Mon-Fri's NSE results
-# calendar and posts the strongest fundamentally-backed candidates to
-# Telegram. Separate workflow from the intraday tier watcher - different
-# schedule, different purpose, no portfolio state to commit back.
+# Every day ~08:00 IST (02:30 UTC): screens the next 7 days' NSE results
+# calendar (rolling window, not a fixed weekly snap - the calendar fills in
+# continuously as companies file board-meeting intimations) and posts the
+# strongest fundamentally-backed candidates to Telegram. Separate workflow
+# from the intraday tier watcher - different schedule, different purpose, no
+# portfolio state to commit back.
+#
+# Was Sunday-only; a run on 2026-09-20 confirmed GitHub's schedule trigger can
+# slip hours late on a single-fire weekly job (fired 07:50 UTC vs 02:30
+# scheduled) - firing daily means any one day's delay just gets caught up by
+# the next day's run instead of costing a whole week's freshness.
 on:
   schedule:
-    - cron: '30 2 * * 0'
+    - cron: '30 2 * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -25,7 +32,7 @@ jobs:
       - name: Restore Telegram session
         run: echo "${{ secrets.TELEGRAM_SESSION_B64 }}" | base64 -d | gunzip > telegram_session.session
 
-      - name: Run weekly preview
+      - name: Run upcoming-results preview
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
